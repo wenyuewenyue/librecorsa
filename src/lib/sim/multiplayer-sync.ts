@@ -7,7 +7,9 @@
  * - 3 Zero-Cost Serverless P2P Transports (100% Free Forever on Static GitHub Pages):
  *   1. Room Code P2P Mode: WebRTC `RTCPeerConnection` + unreliable/unordered `RTCDataChannel`
  *      (`ordered: false, maxRetransmits: 0`) using Google Public STUN (`stun:stun.l.google.com:19302`)
- *      and the public PeerJS Cloud Signaling Broker (`wss://0.peerjs.com/peerjs`) with a 6-character Room Code.
+ *      and the public PeerJS Cloud Signaling Broker (`wss://0.peerjs.com/peerjs`) with a 6-character Room Code,
+ *      or, when built with NEXT_PUBLIC_SIGNAL_URL, the self-hosted relay in
+ *      `scripts/signal-worker` (same OFFER/ANSWER/CANDIDATE shape, roles host/guest).
  *   2. Manual Copy-Paste SDP Offer/Answer Mode: 100% brokerless WebRTC P2P connection via base64 SDP tokens.
  *   3. Local Same-Machine Mode: Zero-config `BroadcastChannel` across browser tabs/windows.
  * - Dead-reckoning state buffer with Cubic Hermite position/velocity spline interpolation
@@ -59,6 +61,8 @@ export interface NetworkVehiclePacket {
   seq?: number;
   /** Driver name (absent from older clients) */
   name?: string;
+  /** Activation-code rainbow exhaust for this run (absent from older clients: no rainbow) */
+  rainbow?: boolean;
   /** Progress in a multiplayer race */
   race?: PeerRaceProgress;
 }
@@ -101,6 +105,8 @@ export interface InterpolatedPeerState {
   isAiPeer: boolean;
   /** Remote player's name */
   name?: string;
+  /** Activation-code rainbow exhaust for this run (false when the sender is an older client) */
+  rainbow?: boolean;
   race?: PeerRaceProgress;
   /** Drawn translucent and never collides (the personal-best ghost) */
   ghost?: boolean;
@@ -183,7 +189,8 @@ type ControlMessage =
   | { type: 'lobby'; lobby: LobbyState }
   | { type: 'ready'; ready: boolean }
   | { type: 'start'; start: RaceStartInfo }
-  | { type: 'abort'; id: string };
+  | { type: 'abort'; id: string }
+  | { type: 'leave' };
 
 interface ControlEnvelope {
   ctl: ControlMessage;
@@ -224,28 +231,164 @@ export function saveUserTurnServer(server: { urls: string; username?: string; cr
   }
 }
 
-/** STUN, plus a TURN relay from the build (NEXT_PUBLIC_TURN_*) and / or the player's own, for strict NATs */
+/** Extra build-time TURN servers (one per provider, each with its own
+ * credentials), from NEXT_PUBLIC_TURN_SERVERS as a JSON array of
+ * { urls, username?, credential? }. The older single-provider
+ * NEXT_PUBLIC_TURN_URLS / _USERNAME / _CREDENTIAL set below stays
+ * supported, so an existing build does not lose its relay. */
+function parseBuildTurnServers(): RTCIceServer[] {
+  const out: RTCIceServer[] = [];
+  const raw = process.env.NEXT_PUBLIC_TURN_SERVERS;
+  if (!raw) return out;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return out;
+    for (const item of parsed.slice(0, 3)) {
+      if (!item || typeof item !== 'object') continue;
+      const v = item as { urls?: unknown; username?: unknown; credential?: unknown };
+      const urls = Array.isArray(v.urls)
+        ? v.urls.filter((u): u is string => typeof u === 'string' && /^turns?:/i.test(u)).slice(0, 4)
+        : typeof v.urls === 'string' && /^turns?:/i.test(v.urls)
+          ? [v.urls]
+          : [];
+      if (urls.length === 0) continue;
+      out.push({
+        urls,
+        username: typeof v.username === 'string' ? v.username.slice(0, 128) : undefined,
+        credential: typeof v.credential === 'string' ? v.credential.slice(0, 256) : undefined,
+      });
+    }
+  } catch {
+    // A bad build variable must not break the game: fall back to the
+    // single-provider set and the player's own TURN server below.
+  }
+  return out;
+}
+
+/** Short-lived Cloudflare TURN servers fetched from the signal Worker
+ * (GET /turn), cached in memory only — never in localStorage, because
+ * the credentials expire. Empty while unconfigured or unreachable, so
+ * the game silently falls back to the static TURN servers. */
+let runtimeTurnServers: RTCIceServer[] = [];
+let runtimeTurnExpiresAtMs = 0;
+let runtimeTurnInFlight: Promise<void> | null = null;
+
+function isTurns443(server: RTCIceServer): boolean {
+  const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+  return urls.some((u) => typeof u === 'string' && /^turns:/i.test(u) && /:443(\?|$)/.test(u));
+}
+
+/** Fetches (once, cached) the runtime TURN list. Never throws and never
+ * waits more than 2.5 s: a slow or missing /turn must not delay a room
+ * join. Callers await this before creating a peer connection; the
+ * host/guest OPEN and offer handlers already run async, and the manual
+ * SDP functions are async too, so no sync call site has to change. */
+export async function ensureRuntimeTurn(): Promise<void> {
+  if (typeof window === 'undefined') return;
+  if (Date.now() < runtimeTurnExpiresAtMs && runtimeTurnServers.length > 0) return;
+  if (runtimeTurnInFlight) return runtimeTurnInFlight;
+  runtimeTurnInFlight = (async () => {
+    try {
+      const origin = signalRelayOrigin();
+      if (!origin) return;
+      const httpOrigin = origin.replace(/^wss:/i, 'https:').replace(/^ws:/i, 'http:');
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 2500);
+      try {
+        const res = await fetch(`${httpOrigin}/turn`, { signal: ctrl.signal, credentials: 'omit' });
+        if (!res.ok) return;
+        const data = (await res.json()) as { iceServers?: unknown; ttl?: unknown };
+        if (!Array.isArray(data.iceServers)) return;
+        const servers: RTCIceServer[] = [];
+        for (const item of data.iceServers.slice(0, 4)) {
+          if (!item || typeof item !== 'object') continue;
+          const v = item as { urls?: unknown; username?: unknown; credential?: unknown };
+          const urls = Array.isArray(v.urls)
+            ? v.urls.filter((u): u is string => typeof u === 'string' && /^turns:/i.test(u) && /:443(\?|$)/.test(u))
+            : typeof v.urls === 'string' && /^turns:/i.test(v.urls) && /:443(\?|$)/.test(v.urls)
+              ? [v.urls]
+              : [];
+          if (urls.length === 0) continue;
+          servers.push({
+            urls,
+            username: typeof v.username === 'string' ? v.username.slice(0, 128) : undefined,
+            credential: typeof v.credential === 'string' ? v.credential.slice(0, 256) : undefined,
+          });
+        }
+        if (servers.length === 0) return;
+        const ttlSec = typeof data.ttl === 'number' && Number.isFinite(data.ttl) ? data.ttl : 1800;
+        runtimeTurnServers = servers;
+        runtimeTurnExpiresAtMs = Date.now() + Math.min(Math.max((ttlSec - 60) * 1000, 300000), 3600000);
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch {
+      // Unreachable /turn is a normal fallback case, not an error to surface.
+    }
+  })();
+  try {
+    await runtimeTurnInFlight;
+  } finally {
+    runtimeTurnInFlight = null;
+  }
+}
+
+/** STUN, plus TURN relays from every configured source, for strict NATs.
+ * Order: STUN first (direct still wins when it works), then TURN servers
+ * with turns:443 first — the transport restrictive campus/company
+ * networks actually allow — then the remaining TURN servers. A blocked
+ * provider does not stop ICE from trying the next one. */
 function iceServers(): RTCIceServer[] {
-  const servers: RTCIceServer[] = [...GOOGLE_STUN_SERVERS];
+  const servers: RTCIceServer[] = [...PUBLIC_STUN_SERVERS];
+  const turns: RTCIceServer[] = [];
   const envUrls = process.env.NEXT_PUBLIC_TURN_URLS;
   if (envUrls) {
     const urls = envUrls.split(',').map((u) => u.trim()).filter((u) => /^turns?:/i.test(u));
     if (urls.length > 0) {
-      servers.push({
+      turns.push({
         urls,
         username: process.env.NEXT_PUBLIC_TURN_USERNAME,
         credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL,
       });
     }
   }
+  turns.push(...parseBuildTurnServers());
+  turns.push(...runtimeTurnServers);
   const user = loadUserTurnServer();
-  if (user) servers.push(user);
+  if (user) turns.push(user);
+  turns.sort((a, b) => Number(isTurns443(b)) - Number(isTurns443(a)));
+  servers.push(...turns);
   return servers;
 }
 
 /** True when a TURN relay is configured (the UI explains strict-NAT failures differently without one) */
 export function hasTurnServer(): boolean {
   return iceServers().some((s) => (Array.isArray(s.urls) ? s.urls : [s.urls]).some((u) => /^turns?:/i.test(u)));
+}
+
+/**
+ * Self-hosted signaling relay origin, baked in at build time (same pattern
+ * as NEXT_PUBLIC_LEADERBOARD_URL). When set, room-code mode uses
+ * `scripts/signal-worker` instead of the public PeerJS broker; when unset,
+ * the PeerJS behaviour below is unchanged, as the fallback. The value is
+ * an origin only (no trailing slash, no /signal suffix): the client
+ * appends `/signal/<code>?role=host|guest` itself.
+ */
+function signalRelayOrigin(): string | null {
+  const raw = process.env.NEXT_PUBLIC_SIGNAL_URL?.trim().replace(/\/+$/, '');
+  if (!raw) return null;
+  // Accept https://, http://, wss:// or ws://; a bare domain is https.
+  if (/^(https?|wss?):\/\//i.test(raw)) return raw;
+  return `https://${raw}`;
+}
+
+/** WebSocket URL for one side of a relay room, or null when relaying is off. */
+function signalRelayWsUrl(roomCode: string, role: 'host' | 'guest'): string | null {
+  const origin = signalRelayOrigin();
+  if (!origin) return null;
+  const wsOrigin = origin.replace(/^http:/i, 'ws:').replace(/^https:/i, 'wss:');
+  const base = wsOrigin.endsWith('/signal') ? wsOrigin : `${wsOrigin}/signal`;
+  return `${base}/${roomCode}?role=${role}`;
 }
 
 const clampStr = (v: unknown, max: number, fallback: string) =>
@@ -366,6 +509,8 @@ function sanitizeControl(v: unknown): ControlMessage | null {
     }
     case 'abort':
       return typeof m.id === 'string' ? { type: 'abort', id: m.id.slice(0, 32) } : null;
+    case 'leave':
+      return { type: 'leave' };
     default:
       return null;
   }
@@ -377,6 +522,8 @@ export interface P2PConnectionStatus {
   state: 'idle' | 'signaling' | 'connected' | 'error';
   connectedWebRtcPeers: number;
   statusText: string;
+  /** Latest ICE connection state for the broker peer, when one exists ('new' = not started yet). The panel shows it while connecting so a stuck join reads as ICE-checking rather than a silent hang. */
+  iceState?: RTCIceConnectionState;
 }
 
 interface PeerSnapshotBuffer {
@@ -422,10 +569,24 @@ interface WebRtcPeerEntry {
 const STATE_CHANNEL = 'f1-telemetry';
 const CONTROL_CHANNEL = 'f1-control';
 
-const GOOGLE_STUN_SERVERS: RTCIceServer[] = [
+/**
+ * Public STUN servers, tried in order; a dead one only costs a failed candidate
+ * lookup, it never blocks the others. Google first (the historical default),
+ * then Nextcloud (stun.nextcloud.com:443 is Nextcloud Talk's documented default
+ * and appears in the always-online-stun validated lists on both 443 and 3478),
+ * Syncthing's own primary STUN (DefaultPrimaryStunServers in its source), and
+ * Xiaomi's miwifi server (used as the China-reachable STUN in several public
+ * WebRTC projects; Google's STUN is the one commonly blocked from mainland
+ * China). No TURN credentials are baked in here: TURN stays user-configured.
+ */
+const PUBLIC_STUN_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
   { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun.nextcloud.com:443' },
+  { urls: 'stun:stun.nextcloud.com:3478' },
+  { urls: 'stun:stun.syncthing.net:3478' },
+  { urls: 'stun:stun.miwifi.com:3478' },
 ];
 
 /** A raw clock offset this far (ms) from the filtered one is a clock step, not jitter: snap to it */
@@ -451,7 +612,16 @@ export class MultiplayerSyncManager {
   private channel: BroadcastChannel | null = null;
   private ws: WebSocket | null = null;
   private signalingWs: WebSocket | null = null;
+  /** Join-attempt watchdog: the broker silently drops offers to a nonexistent host, so without this a guest waits forever */
+  private joinTimeout: ReturnType<typeof setTimeout> | null = null;
+  /** Monotonic id of the latest joinRoom() call: timers captured by an older attempt must not fire for a newer one */
+  private joinAttemptId = 0;
+  /** Per-peer ICE watchdog, keyed by rtcPeers key: fires when offer/answer exchange finished but the data channel never opens */
+  private iceTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
   private rtcPeers = new Map<string, WebRtcPeerEntry>();
+  /** Trickle ICE candidates that arrived before their peer connection
+   * existed or before its remote description was set (see below). */
+  private pendingCandidates = new Map<string, RTCIceCandidateInit[]>();
   private manualPendingPc: RTCPeerConnection | null = null;
 
   private peers = new Map<string, PeerSnapshotBuffer>();
@@ -464,7 +634,7 @@ export class MultiplayerSyncManager {
     roomCode: '',
     state: 'idle',
     connectedWebRtcPeers: 0,
-    statusText: 'BroadcastChannel Active (Same-Browser) • Ready for WebRTC P2P',
+    statusText: '同浏览器 BroadcastChannel 已激活 • 可进行 WebRTC 点对点连接',
   };
   public onStatusChange?: (status: P2PConnectionStatus) => void;
 
@@ -494,6 +664,12 @@ export class MultiplayerSyncManager {
   private seq = 0;
   private lastPingMs = 0;
   private lastLobbyMs = 0;
+  /** Idle auto-disconnect (room modes only, never during a race): 30 min idle, warning at 29 min. */
+  private static readonly IDLE_LIMIT_MS = 30 * 60 * 1000;
+  private static readonly IDLE_WARNING_MS = 29 * 60 * 1000;
+  private idleLastActivityMs = Date.now();
+  private idleWarningShown = false;
+  private idleTimer: ReturnType<typeof setInterval> | null = null;
 
   // Reusable math temporaries
   private tempQuat0 = new THREE.Quaternion();
@@ -514,6 +690,79 @@ export class MultiplayerSyncManager {
   constructor() {
     this.localPeerId = `peer_${Math.random().toString(36).slice(2, 9)}`;
     this.initTransports();
+    // Wall-clock check (not the render loop) so a backgrounded tab still
+    // disconnects instead of burning relay traffic while forgotten.
+    if (typeof setInterval !== 'undefined') {
+      this.idleTimer = setInterval(() => this.checkIdle(), 30 * 1000);
+    }
+  }
+
+  /** Any genuine user/lobby activity resets the idle clock; automatic pings do not. */
+  private markIdleActivity(): void {
+    this.idleLastActivityMs = Date.now();
+    if (this.idleWarningShown) {
+      this.idleWarningShown = false;
+      if (this.status.state === 'connected') {
+        this.emitStatus({ statusText: 'WebRTC 数据通道已连接（25 Hz 无序 UDP）' });
+      }
+    }
+  }
+
+  private checkIdle(): void {
+    if (this.status.mode !== 'room_host' && this.status.mode !== 'room_guest') {
+      this.idleWarningShown = false;
+      return;
+    }
+    const hasOpenPeer = [...this.rtcPeers.values()].some((e) => e.dc?.readyState === 'open');
+    if (!hasOpenPeer || this.activeRace) {
+      // No peer to relay to, or a race is running: never idle-disconnect.
+      this.idleLastActivityMs = Date.now();
+      this.idleWarningShown = false;
+      return;
+    }
+    const idleMs = Date.now() - this.idleLastActivityMs;
+    if (idleMs >= MultiplayerSyncManager.IDLE_LIMIT_MS) {
+      this.disconnectIdle();
+    } else if (idleMs >= MultiplayerSyncManager.IDLE_WARNING_MS && !this.idleWarningShown) {
+      this.idleWarningShown = true;
+      this.emitStatus({
+        statusText: '闲置 29 分钟，1 分钟后将自动断开连接以节省流量，任意操作可取消。',
+      });
+    }
+  }
+
+  /** Closes a room connection after 30 min idle; peers learn via 'leave' first. */
+  private disconnectIdle(): void {
+    try {
+      this.sendControl({ type: 'leave' });
+    } catch {
+      // Ignore send error: the peer close below still ends the relay.
+    }
+    this.clearJoinTimeout();
+    this.clearAllIceTimeouts();
+    for (const entry of this.rtcPeers.values()) {
+      try {
+        entry.dc?.close();
+        entry.pc.close();
+      } catch {
+        // Ignore close error
+      }
+    }
+    this.rtcPeers.clear();
+    this.closeSignaling();
+    this.members.clear();
+    this.memberSeenMs.clear();
+    this.setLobby(null);
+    this.isHost = false;
+    this.hostId = null;
+    this.activeRace = null;
+    this.idleWarningShown = false;
+    this.emitStatus({
+      mode: 'local',
+      roomCode: '',
+      state: 'idle',
+      statusText: '已因 30 分钟闲置自动断开连接，以节省流量。',
+    });
   }
 
   private emitStatus(patch: Partial<P2PConnectionStatus>): void {
@@ -591,7 +840,16 @@ export class MultiplayerSyncManager {
     if (typeof window === 'undefined' || typeof RTCPeerConnection === 'undefined') {
       return '';
     }
+    // Start the runtime TURN fetch early: the host peer connection is only
+    // created when a guest offer arrives, so by then the cached list is
+    // usually ready, and a slow /turn never blocks room creation.
+    void ensureRuntimeTurn();
     this.closeSignaling();
+    // Switching to host abandons any pending guest join: its watchdog must not
+    // fire later and overwrite the host's ready status (closeSignaling no longer
+    // clears timers, see below).
+    this.clearJoinTimeout();
+    this.clearAllIceTimeouts();
     this.becomeHost();
     const roomCode = (customCode || MultiplayerSyncManager.generateRoomCode())
       .trim()
@@ -599,17 +857,26 @@ export class MultiplayerSyncManager {
       .slice(0, 6);
     const brokerPeerId = `rwanda2026_room_${roomCode}_host`;
     const token = Math.random().toString(36).slice(2, 10);
+    // Self-hosted relay when built with NEXT_PUBLIC_SIGNAL_URL; otherwise
+    // the public PeerJS broker, unchanged. The relay speaks the same
+    // OPEN/OFFER/CANDIDATE shape (its src is the role, 'guest'), so the
+    // handler below is shared by both paths.
+    const relayUrl = signalRelayWsUrl(roomCode, 'host');
+    const useRelay = relayUrl !== null;
 
     this.emitStatus({
       mode: 'room_host',
       roomCode,
       state: 'signaling',
-      statusText: `Hosting Room ${roomCode} on Public P2P Broker...`,
+      statusText: useRelay
+        ? `正在创建房间 ${roomCode}…`
+        : `正在公共 P2P 中介上创建房间 ${roomCode}…`,
     });
 
     try {
       const ws = new WebSocket(
-        `wss://0.peerjs.com/peerjs?key=peerjs&id=${encodeURIComponent(brokerPeerId)}&token=${encodeURIComponent(token)}`
+        relayUrl ??
+          `wss://0.peerjs.com/peerjs?key=peerjs&id=${encodeURIComponent(brokerPeerId)}&token=${encodeURIComponent(token)}`
       );
       this.signalingWs = ws;
 
@@ -619,15 +886,17 @@ export class MultiplayerSyncManager {
           if (msg.type === 'OPEN') {
             this.emitStatus({
               state: 'signaling',
-              statusText: `Room ${roomCode} Ready • Waiting for Peers to Join`,
+              statusText: `房间 ${roomCode} 已就绪 • 等待对手加入`,
+            });
+          } else if (msg.type === 'ERROR') {
+            this.emitStatus({
+              state: 'error',
+              statusText: '房间已被占用，请重新创建房间',
             });
           } else if (msg.type === 'OFFER' && msg.src && msg.payload?.sdp) {
             await this.handleBrokerOffer(msg.src, msg.payload.sdp, msg.payload.connectionId);
           } else if (msg.type === 'CANDIDATE' && msg.src && msg.payload?.candidate) {
-            const entry = this.rtcPeers.get(msg.src);
-            if (entry) {
-              await entry.pc.addIceCandidate(new RTCIceCandidate(msg.payload.candidate));
-            }
+            await this.queueOrAddCandidate(msg.src, msg.payload.candidate);
           }
         } catch {
           // Ignore malformed broker message
@@ -637,13 +906,15 @@ export class MultiplayerSyncManager {
       ws.onerror = () => {
         this.emitStatus({
           state: 'error',
-          statusText: 'Public Broker Unreachable — Use Manual SDP Copy/Paste Below',
+          statusText: useRelay
+            ? '无法连接自有信令 — 请使用下方手动 SDP 复制粘贴'
+            : '无法连接公共中介 — 请使用下方手动 SDP 复制粘贴',
         });
       };
     } catch {
       this.emitStatus({
         state: 'error',
-        statusText: 'Failed to Open Signaling Socket — Use Manual SDP Fallback',
+        statusText: '信令连接打开失败 — 请使用手动 SDP 备用方式',
       });
     }
 
@@ -666,17 +937,53 @@ export class MultiplayerSyncManager {
     const hostBrokerId = `rwanda2026_room_${roomCode}_host`;
     const token = Math.random().toString(36).slice(2, 10);
     const connId = `dc_${Math.random().toString(36).slice(2, 9)}`;
+    // Relay path: the relay rewrites src to the role, so the host peer is
+    // keyed 'host' (not a broker id) and CANDIDATE/ANSWER routing still
+    // matches by that key. PeerJS path keeps its broker ids, unchanged.
+    const relayUrl = signalRelayWsUrl(roomCode, 'guest');
+    const useRelay = relayUrl !== null;
+    const peerRemoteId = useRelay ? 'host' : hostBrokerId;
 
     this.emitStatus({
       mode: 'room_guest',
       roomCode,
       state: 'signaling',
-      statusText: `Connecting to Room ${roomCode}...`,
+      statusText: `正在连接房间 ${roomCode}…`,
+      iceState: 'new',
     });
+
+    // No response from the host within 30 s means the code is wrong, the host
+    // is offline, or the broker dropped the offer: surface an error instead of
+    // hanging on "正在连接房间…" forever. The panel's 加入 button retries.
+    // The timer is keyed to this attempt id (not just to mode/state) so a
+    // later status-text change, a panel remount, or a newer join attempt can
+    // never silently disarm it, and closeSignaling() deliberately does NOT
+    // clear it: only an explicit clear (success, cancel, dispose, a newer
+    // join/host, or the timer itself) may do so.
+    this.clearJoinTimeout();
+    this.clearAllIceTimeouts();
+    // A retry must not leave the previous attempt's half-open peer alive: its
+    // ICE/connection handlers could otherwise fire error text into the new
+    // attempt. Open data channels (an already-connected room) are untouched.
+    this.closeUnopenedPeers();
+    const attempt = ++this.joinAttemptId;
+    this.joinTimeout = setTimeout(() => {
+      this.joinTimeout = null;
+      if (attempt !== this.joinAttemptId) return;
+      if (this.status.mode !== 'room_guest') return;
+      if (this.hasOpenDataChannel()) return;
+      this.closeUnopenedPeers();
+      this.closeSignaling();
+      this.emitStatus({
+        state: 'error',
+        statusText: '连接超时：30 秒内未收到房主回应，请检查房间代码后重试',
+      });
+    }, 30000);
 
     try {
       const ws = new WebSocket(
-        `wss://0.peerjs.com/peerjs?key=peerjs&id=${encodeURIComponent(guestBrokerId)}&token=${encodeURIComponent(token)}`
+        relayUrl ??
+          `wss://0.peerjs.com/peerjs?key=peerjs&id=${encodeURIComponent(guestBrokerId)}&token=${encodeURIComponent(token)}`
       );
       this.signalingWs = ws;
 
@@ -684,15 +991,16 @@ export class MultiplayerSyncManager {
         try {
           const msg = JSON.parse(ev.data);
           if (msg.type === 'OPEN') {
-            const pc = this.createPeerConnection(hostBrokerId, connId);
+            await ensureRuntimeTurn();
+            const pc = this.createPeerConnection(peerRemoteId, connId);
             const dc = pc.createDataChannel(STATE_CHANNEL, {
               ordered: false,
               maxRetransmits: 0,
             });
             const ctl = pc.createDataChannel(CONTROL_CHANNEL, { ordered: true });
-            const entry: WebRtcPeerEntry = { remoteId: hostBrokerId, pc, dc, ctl };
-            this.rtcPeers.set(hostBrokerId, entry);
-            this.bindDataChannel(hostBrokerId, dc);
+            const entry: WebRtcPeerEntry = { remoteId: peerRemoteId, pc, dc, ctl };
+            this.rtcPeers.set(peerRemoteId, entry);
+            this.bindDataChannel(peerRemoteId, dc);
             this.bindControlChannel(entry, ctl);
 
             const offer = await pc.createOffer();
@@ -701,7 +1009,7 @@ export class MultiplayerSyncManager {
             ws.send(
               JSON.stringify({
                 type: 'OFFER',
-                dst: hostBrokerId,
+                dst: peerRemoteId,
                 payload: {
                   sdp: pc.localDescription,
                   type: 'data',
@@ -709,20 +1017,25 @@ export class MultiplayerSyncManager {
                 },
               })
             );
+          } else if (msg.type === 'ERROR') {
+            this.clearJoinTimeout();
+            this.emitStatus({
+              state: 'error',
+              statusText: '房间已被占用，请检查房间码后重试',
+            });
           } else if (msg.type === 'ANSWER' && msg.src && msg.payload?.sdp) {
             const entry = this.rtcPeers.get(msg.src);
             if (entry) {
               await entry.pc.setRemoteDescription(
                 new RTCSessionDescription(msg.payload.sdp)
               );
+              await this.flushPendingCandidates(msg.src);
+              // Offer/answer exchange is done: from here the only thing left
+              // is ICE + the data channel, so the 20 s ICE watchdog starts now.
+              this.startIceTimeout(msg.src);
             }
           } else if (msg.type === 'CANDIDATE' && msg.src && msg.payload?.candidate) {
-            const entry = this.rtcPeers.get(msg.src);
-            if (entry) {
-              await entry.pc.addIceCandidate(
-                new RTCIceCandidate(msg.payload.candidate)
-              );
-            }
+            await this.queueOrAddCandidate(msg.src, msg.payload.candidate);
           }
         } catch {
           // Ignore signaling parse error
@@ -732,14 +1045,80 @@ export class MultiplayerSyncManager {
       ws.onerror = () => {
         this.emitStatus({
           state: 'error',
-          statusText: 'Broker Error — Use Manual SDP Copy-Paste Fallback',
+          statusText: useRelay
+            ? '自有信令出错 — 请使用手动 SDP 复制粘贴备用方式'
+            : '中介出错 — 请使用手动 SDP 复制粘贴备用方式',
+        });
+      };
+
+      // A broker socket that closes mid-join used to leave the panel on
+      // "正在连接房间…" until the 30 s timer (if it was still armed) fired.
+      // Report it at once; intentional closes (cancel / timeout / a newer
+      // join) already moved the status off signaling, so they stay silent.
+      ws.onclose = () => {
+        if (attempt !== this.joinAttemptId) return;
+        if (this.status.mode !== 'room_guest' || this.status.state !== 'signaling') return;
+        if (this.hasOpenDataChannel()) return;
+        this.clearJoinTimeout();
+        this.emitStatus({
+          state: 'error',
+          statusText: '信令连接已断开，请检查网络后重试',
         });
       };
     } catch {
       this.emitStatus({
         state: 'error',
-        statusText: 'Connection Failed — Use Manual SDP Copy-Paste Fallback',
+        statusText: '连接失败 — 请使用手动 SDP 复制粘贴备用方式',
       });
+    }
+  }
+
+  /**
+   * Trickle ICE fix: a candidate that arrives before its peer connection
+   * exists, or before its remote description is set, must NOT be dropped.
+   * The old code called addIceCandidate directly and silently ignored the
+   * rejection, so a fast guest (all candidates gathered in a burst right
+   * after its offer) could lose every candidate while the host was still
+   * fetching runtime TURN, setting the remote description, and creating
+   * its answer — and then ICE failed even though a direct path existed
+   * (the manual SDP path, which bundles all candidates in one token,
+   * worked in exactly that case). Queue such candidates and flush them
+   * once the remote description is set.
+   */
+  private async queueOrAddCandidate(remoteId: string, candidate: RTCIceCandidateInit): Promise<void> {
+    const entry = this.rtcPeers.get(remoteId);
+    if (entry && entry.pc.remoteDescription) {
+      try {
+        await entry.pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch {
+        // A single bad candidate must not break the connection.
+      }
+      return;
+    }
+    const queued = this.pendingCandidates.get(remoteId) ?? [];
+    if (queued.length < 50) queued.push(candidate);
+    this.pendingCandidates.set(remoteId, queued);
+  }
+
+  private async flushPendingCandidates(remoteId: string): Promise<void> {
+    // Drain in rounds: a candidate arriving mid-flush is queued again and
+    // picked up by the next round, never lost to a stale snapshot.
+    for (let round = 0; round < 5; round++) {
+      const queued = this.pendingCandidates.get(remoteId) ?? [];
+      if (queued.length === 0) return;
+      this.pendingCandidates.set(remoteId, []);
+      const entry = this.rtcPeers.get(remoteId);
+      if (!entry || !entry.pc.remoteDescription) {
+        this.pendingCandidates.set(remoteId, queued);
+        return;
+      }
+      for (const candidate of queued) {
+        try {
+          await entry.pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch {
+          // Ignore a single stale candidate; the rest still apply.
+        }
+      }
     }
   }
 
@@ -748,12 +1127,14 @@ export class MultiplayerSyncManager {
     sdp: RTCSessionDescriptionInit,
     connectionId: string
   ): Promise<void> {
+    await ensureRuntimeTurn();
     const pc = this.createPeerConnection(remoteId, connectionId);
     const entry: WebRtcPeerEntry = { remoteId, pc, dc: null };
     this.rtcPeers.set(remoteId, entry);
     pc.ondatachannel = (ev) => this.acceptChannel(entry, ev.channel);
 
     await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    await this.flushPendingCandidates(remoteId);
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
 
@@ -769,6 +1150,8 @@ export class MultiplayerSyncManager {
           },
         })
       );
+      // Offer/answer exchange is done: the 20 s ICE watchdog starts now.
+      this.startIceTimeout(remoteId);
     }
   }
 
@@ -798,6 +1181,37 @@ export class MultiplayerSyncManager {
       }
     };
 
+    // ICE state is reported to the panel while a connection is pending, so a
+    // guest stuck on "正在连接房间…" can be told apart from a signaling loss:
+    // checking = the broker delivered the offer/answer but no usable network
+    // path has been found yet; failed = no path exists (strict NAT / mobile).
+    // connectionState 'failed' usually follows ice 'failed' shortly after, so
+    // the failed branch below is the same message, not a second error.
+    pc.oniceconnectionstatechange = () => {
+      const ice = pc.iceConnectionState;
+      const entry = this.rtcPeers.get(remoteId);
+      if (entry?.dc?.readyState === 'open') {
+        this.clearIceTimeout(remoteId);
+        return;
+      }
+      this.emitStatus({ iceState: ice });
+      if (
+        ice === 'failed' &&
+        this.status.mode === 'room_guest' &&
+        this.status.state === 'signaling'
+      ) {
+        this.clearJoinTimeout();
+        this.clearIceTimeout(remoteId);
+        this.closeUnopenedPeers();
+        this.emitStatus({
+          state: 'error',
+          statusText: hasTurnServer()
+            ? '即使通过 TURN 中继也无法连接。请检查 TURN 配置，或尝试使用同一 Wi-Fi。'
+            : '无法直连（严格 NAT / 移动网络）。请在“高级”中添加 TURN 中继，或使用同一 Wi-Fi。',
+        });
+      }
+    };
+
     pc.onconnectionstatechange = () => {
       if (
         pc.connectionState === 'disconnected' ||
@@ -806,6 +1220,7 @@ export class MultiplayerSyncManager {
       ) {
         const entry = this.rtcPeers.get(remoteId);
         const neverOpened = !entry?.dc || entry.dc.readyState !== 'open';
+        this.clearIceTimeout(remoteId);
         this.rtcPeers.delete(remoteId);
         if (entry?.gamePeerId) this.dropMember(entry.gamePeerId);
         const strictNat = pc.connectionState === 'failed' && neverOpened;
@@ -816,9 +1231,9 @@ export class MultiplayerSyncManager {
               ? `WebRTC P2P Connected (${this.rtcPeers.size} peer)`
               : strictNat
                 ? hasTurnServer()
-                  ? 'Could not connect, even through the TURN relay. Check the TURN details, or try the same Wi-Fi.'
-                  : 'Could not connect directly (strict NAT / mobile network). Add a TURN relay under Advanced, or use the same Wi-Fi.'
-                : 'Peer Disconnected • Waiting for Reconnection',
+                  ? '即使通过 TURN 中继也无法连接。请检查 TURN 配置，或尝试使用同一 Wi-Fi。'
+                  : '无法直连（严格 NAT / 移动网络）。请在“高级”中添加 TURN 中继，或使用同一 Wi-Fi。'
+                : '对手已断开 • 等待重连',
         });
       }
     };
@@ -859,12 +1274,16 @@ export class MultiplayerSyncManager {
 
   private bindDataChannel(remoteId: string, dc: RTCDataChannel): void {
     dc.onopen = () => {
+      this.markIdleActivity();
+      this.clearJoinTimeout();
+      this.clearIceTimeout(remoteId);
       this.emitStatus({
         state: 'connected',
-        statusText: `WebRTC DataChannel Connected (25 Hz Unordered UDP)`,
+        statusText: `WebRTC 数据通道已连接（25 Hz 无序 UDP）`,
       });
     };
     dc.onclose = () => {
+      this.clearIceTimeout(remoteId);
       const gone = this.rtcPeers.get(remoteId)?.gamePeerId;
       this.rtcPeers.delete(remoteId);
       if (gone) this.dropMember(gone);
@@ -947,18 +1366,20 @@ export class MultiplayerSyncManager {
 
   /** Hosts a race for the other tabs of this browser (no network needed) */
   public hostLocal(): void {
-    this.emitStatus({ mode: 'local', state: 'connected', statusText: 'Hosting a race for the tabs of this browser' });
+    this.emitStatus({ mode: 'local', state: 'connected', statusText: '正在为本浏览器的标签页主持比赛' });
     this.becomeHost();
   }
 
   /** Host: change the race settings */
   public setLobbySettings(patch: Partial<LobbySettings>): void {
+    this.markIdleActivity();
     if (!this.isHost) return;
     this.lobbySettings = { ...this.lobbySettings, ...patch };
     this.broadcastLobby();
   }
 
   public setReady(ready: boolean): void {
+    this.markIdleActivity();
     this.localReady = ready;
     if (this.isHost) this.broadcastLobby();
     else this.sendControl({ type: 'ready', ready });
@@ -966,6 +1387,7 @@ export class MultiplayerSyncManager {
 
   /** Host: lines everyone up and starts the lights `countdownMs` from now. Returns the start, or null when not hosting */
   public startRace(countdownMs = 4000): RaceStartInfo | null {
+    this.markIdleActivity();
     if (!this.isHost) return null;
     const players = this.lobbyPlayers();
     const start: RaceStartInfo = {
@@ -988,6 +1410,7 @@ export class MultiplayerSyncManager {
 
   /** Host: ends the race for everyone (back to the lobby) */
   public abortRace(): void {
+    this.markIdleActivity();
     if (!this.isHost || !this.activeRace) return;
     const id = this.activeRace.id;
     this.activeRace = null;
@@ -1091,6 +1514,7 @@ export class MultiplayerSyncManager {
     const from = env.from.slice(0, 64);
     const msg = sanitizeControl(env.ctl);
     if (!msg) return;
+    if (msg.type !== 'ping' && msg.type !== 'pong') this.markIdleActivity();
     // The host passes guests' messages on to the other guests
     if (this.isHost && via) this.relay(JSON.stringify({ ctl: msg, from, to: env.to }), via.remoteId, 'control');
     if (env.to && env.to !== this.localPeerId) return;
@@ -1160,6 +1584,15 @@ export class MultiplayerSyncManager {
         this.activeRace = null;
         this.onRaceAbort?.(msg.id);
         break;
+      case 'leave':
+        if (this.isHost) {
+          this.dropMember(from);
+        } else if (from === this.hostId) {
+          this.hostId = null;
+          this.setLobby(null);
+          this.emitStatus({ state: 'idle', statusText: '房主已断开连接。' });
+        }
+        break;
     }
   }
 
@@ -1186,6 +1619,7 @@ export class MultiplayerSyncManager {
     if (typeof window === 'undefined' || typeof RTCPeerConnection === 'undefined') {
       return '';
     }
+    await ensureRuntimeTurn();
     const remoteId = `manual_${Math.random().toString(36).slice(2, 7)}`;
     this.becomeHost();
     const pc = new RTCPeerConnection({ iceServers: iceServers() });
@@ -1204,7 +1638,7 @@ export class MultiplayerSyncManager {
     this.emitStatus({
       mode: 'manual_sdp',
       state: 'signaling',
-      statusText: 'Gathering STUN ICE Candidates for Manual Offer...',
+      statusText: '正在收集手动邀请的 STUN ICE 候选…',
     });
 
     const offer = await pc.createOffer();
@@ -1215,7 +1649,7 @@ export class MultiplayerSyncManager {
     this.emitStatus({
       mode: 'manual_sdp',
       state: 'signaling',
-      statusText: 'Offer Ready — Send to Peer & Paste Their Answer',
+      statusText: '邀请已就绪 — 发送给对手并粘贴对方的答复',
     });
     return token;
   }
@@ -1227,6 +1661,7 @@ export class MultiplayerSyncManager {
     if (typeof window === 'undefined' || typeof RTCPeerConnection === 'undefined') {
       return '';
     }
+    await ensureRuntimeTurn();
     const remoteId = `manual_host_${Math.random().toString(36).slice(2, 7)}`;
     this.becomeGuest();
     const pc = new RTCPeerConnection({ iceServers: iceServers() });
@@ -1244,7 +1679,7 @@ export class MultiplayerSyncManager {
     this.emitStatus({
       mode: 'manual_sdp',
       state: 'signaling',
-      statusText: 'Answer Generated — Send Back to Host to Connect!',
+      statusText: '答复已生成 — 发回给房主以完成连接！',
     });
     return answerToken;
   }
@@ -1261,7 +1696,7 @@ export class MultiplayerSyncManager {
     this.emitStatus({
       mode: 'manual_sdp',
       state: 'connected',
-      statusText: 'Manual WebRTC P2P Handshake Complete!',
+      statusText: '手动 WebRTC 点对点握手完成！',
     });
   }
 
@@ -1288,6 +1723,109 @@ export class MultiplayerSyncManager {
     });
   }
 
+  private clearJoinTimeout(): void {
+    if (this.joinTimeout !== null) {
+      clearTimeout(this.joinTimeout);
+      this.joinTimeout = null;
+    }
+  }
+
+  private hasOpenDataChannel(): boolean {
+    for (const entry of this.rtcPeers.values()) {
+      if (entry.dc && entry.dc.readyState === 'open') return true;
+    }
+    return false;
+  }
+
+  private clearIceTimeout(remoteId: string): void {
+    const timer = this.iceTimeouts.get(remoteId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.iceTimeouts.delete(remoteId);
+    }
+  }
+
+  private clearAllIceTimeouts(): void {
+    for (const timer of this.iceTimeouts.values()) clearTimeout(timer);
+    this.iceTimeouts.clear();
+  }
+
+  /**
+   * ICE watchdog, broker modes only (manual SDP is untouched: it never calls
+   * this). Starts once offer/answer exchange has finished. If 20 s later the
+   * data channel still is not open and ICE is not connected, the peer is
+   * dropped and — when it was the last peer — the panel gets a direct-connect
+   * failure with the next steps, instead of an endless "正在连接房间…".
+   * Browsers can sit in ICE 'checking' indefinitely when no candidate pair
+   * works (e.g. both sides behind NAT with STUN unreachable), which is
+   * exactly the state the 30 s join timer alone cannot distinguish from a
+   * lost signaling message.
+   */
+  private startIceTimeout(remoteId: string): void {
+    this.clearIceTimeout(remoteId);
+    const timer = setTimeout(() => {
+      this.iceTimeouts.delete(remoteId);
+      const entry = this.rtcPeers.get(remoteId);
+      const pc = entry?.pc;
+      if (!pc) return;
+      const dcOpen = entry?.dc?.readyState === 'open';
+      const iceOk =
+        pc.iceConnectionState === 'connected' ||
+        pc.iceConnectionState === 'completed' ||
+        pc.connectionState === 'connected';
+      if (dcOpen || iceOk) return;
+      if (this.status.mode !== 'room_guest' && this.status.mode !== 'room_host') return;
+      try {
+        pc.close();
+      } catch {
+        // Ignore close error
+      }
+      this.rtcPeers.delete(remoteId);
+      if (this.rtcPeers.size > 0) return;
+      this.clearJoinTimeout();
+      this.emitStatus({
+        state: 'error',
+        statusText:
+          '直连失败：20 秒内未能建立点对点连接。请使用同一 Wi-Fi，或在“高级”中添加 TURN 中继后重试。',
+      });
+    }, 20000);
+    this.iceTimeouts.set(remoteId, timer);
+  }
+
+  /** Closes peer connections whose data channel never opened (a pending join attempt only) */
+  private closeUnopenedPeers(): void {
+    for (const entry of [...this.rtcPeers.values()]) {
+      if (entry.dc && entry.dc.readyState === 'open') continue;
+      this.clearIceTimeout(entry.remoteId);
+      try {
+        entry.pc.close();
+      } catch {
+        // Ignore close error
+      }
+      this.rtcPeers.delete(entry.remoteId);
+    }
+  }
+
+  /** Abandons a join that is still waiting for the host; a connected room is untouched */
+  public cancelJoin(): void {
+    if (this.status.mode !== 'room_guest' || this.status.state !== 'signaling') return;
+    this.clearJoinTimeout();
+    this.clearAllIceTimeouts();
+    this.closeUnopenedPeers();
+    this.closeSignaling();
+    this.emitStatus({
+      mode: 'local',
+      roomCode: '',
+      state: 'idle',
+      statusText: '已取消加入房间',
+    });
+  }
+
+  // NOTE: closeSignaling() deliberately does NOT clear the join timer. It is
+  // called from paths that run during a pending join (a newer join/host, the
+  // timeout callback itself, dispose), and clearing here used to disarm the
+  // watchdog mid-attempt. Callers that mean "abandon this join" clear the
+  // timer explicitly (cancelJoin, join success, dispose, a newer join/host).
   private closeSignaling(): void {
     if (this.signalingWs) {
       try {
@@ -1401,6 +1939,7 @@ export class MultiplayerSyncManager {
     buffer.renderedState.driverCode = buffer.driverCode;
     buffer.renderedState.teamColorHex = buffer.teamColorHex;
     buffer.renderedState.name = typeof pkt.name === 'string' ? clampStr(pkt.name, 16, buffer.driverCode) : undefined;
+    buffer.renderedState.rainbow = pkt.rainbow === true;
     buffer.renderedState.race = sanitizeRace(pkt.race);
     // The sender may switch car or circuit mid-session
     buffer.renderedState.vehicle = asPeerVehicle(pkt.vehicle);
@@ -1424,6 +1963,16 @@ export class MultiplayerSyncManager {
     nowMs: number,
     localPacket: Omit<NetworkVehiclePacket, 'peerId' | 'timestampMs'>
   ): InterpolatedPeerState[] {
+    // Driving counts as activity (so solo practice in a room never trips
+    // the idle timer); a race in progress is handled by checkIdle() itself.
+    if (
+      Math.abs(localPacket.throttle) > 0.05 ||
+      Math.abs(localPacket.brake) > 0.05 ||
+      Math.abs(localPacket.steerAngle) > 0.05 ||
+      Math.abs(localPacket.speedKmh) > 5
+    ) {
+      this.markIdleActivity();
+    }
     if (nowMs - this.lastBroadcastMs >= this.broadcastIntervalMs) {
       this.lastBroadcastMs = nowMs;
       const fullPacket: NetworkVehiclePacket = {
@@ -1660,6 +2209,12 @@ export class MultiplayerSyncManager {
   }
 
   public dispose(): void {
+    if (this.idleTimer) {
+      clearInterval(this.idleTimer);
+      this.idleTimer = null;
+    }
+    this.clearJoinTimeout();
+    this.clearAllIceTimeouts();
     this.closeSignaling();
     for (const entry of this.rtcPeers.values()) {
       try {

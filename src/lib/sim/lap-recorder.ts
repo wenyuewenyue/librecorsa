@@ -6,6 +6,13 @@
 import type { CarTelemetry, VehicleModelId } from "@/types/f1";
 import { LAP_SAMPLE_STRIDE } from "./lap-types";
 import type { CornerStat, LapRecording, LapSample, LapSummaryData } from "./lap-types";
+import {
+  AUTOPILOT_PENALTY_MS,
+  FLASHBACK_LIMITS,
+  WALL_RETURN_LIMITS,
+  type FlashbackEvent,
+  type WallReturnEvent,
+} from "./buff-pack";
 
 export interface LapRecorderTurn {
   number: number;
@@ -18,7 +25,7 @@ export interface LapRecorderInput {
   telemetry: Pick<
     CarTelemetry,
     "lapCount" | "currentLapTimeMs" | "lastLapTimeMs" | "trackDistanceM" | "speedKmh" | "throttle" | "brake" | "steering" | "gear" | "offTrack" | "sectorTimesMs" | "lapInvalid" | "lastLapValid"
-  >;
+  > & { aiAutopilot?: boolean };
   position: { x: number; y: number; z: number };
   quaternion: { x: number; y: number; z: number; w: number };
 }
@@ -149,6 +156,19 @@ export class LapRecorder {
   private valid = true;
   private lastSampleT = -Infinity;
   private rows: number[][] = [];
+  /** Wall-return teleports in the lap in progress (cleared when a lap starts or is abandoned) */
+  private wallReturns: WallReturnEvent[] = [];
+  /** Instant-replay flashback teleports in the lap in progress (cleared when a lap starts or is abandoned) */
+  private flashbacks: FlashbackEvent[] = [];
+  /** Track-limits penalty (ms) for the lap in progress, +3000 per strike, cleared on lap start/abandon */
+  private trackLimitsPenaltyMs = 0;
+  /** Autopilot penalty (ms) for the lap in progress, +30000 once if any frame was autopilot */
+  private autopilotPenaltyMs = 0;
+  private autopilotNoted = false;
+  /** Safety net for a physics lapInvalid flag: converted to +3000 once per lap, not a deletion (dead in practice now that no code calls invalidateLap) */
+  private lapInvalidNoted = false;
+  /** Previous frame's off-track state, for the non-judged off-track rising edge */
+  private prevOffTrack = false;
 
   constructor(opts: LapRecorderOptions) {
     this.trackLengthM = opts.trackLengthM;
@@ -247,6 +267,13 @@ export class LapRecorder {
     this.valid = true;
     this.lastSampleT = -Infinity;
     this.rows = [];
+    this.wallReturns = [];
+    this.flashbacks = [];
+    this.trackLimitsPenaltyMs = 0;
+    this.autopilotPenaltyMs = 0;
+    this.autopilotNoted = false;
+    this.lapInvalidNoted = false;
+    this.prevOffTrack = false;
   }
 
   private abandon(): void {
@@ -254,13 +281,74 @@ export class LapRecorder {
     this.valid = true;
     this.lastSampleT = -Infinity;
     this.rows = [];
+    this.wallReturns = [];
+    this.trackLimitsPenaltyMs = 0;
   }
 
-  /** Adds this update to the lap in progress: validity and a sample when one is due */
+  /**
+   * Records one track-limits strike (+3000 ms) for the lap in progress; ignored
+   * outside a lap. Called by the simulator when a practice penalty event lands on
+   * the lap still running, before that lap is closed.
+   */
+  noteTrackLimitsPenalty(penaltyMs: number): void {
+    if (!this.recording) return;
+    if (!Number.isFinite(penaltyMs) || penaltyMs <= 0) return;
+    this.trackLimitsPenaltyMs += Math.round(penaltyMs);
+  }
+
+  /** Records a wall-return teleport in the lap in progress; ignored outside a lap */
+  noteWallReturn(event: WallReturnEvent): void {
+    if (!this.recording) return;
+    if (this.wallReturns.length >= WALL_RETURN_LIMITS.maxPerLap) return;
+    if (!Number.isFinite(event.t) || !Number.isFinite(event.sBefore) || !Number.isFinite(event.sAfter) || !Number.isFinite(event.speedKmh)) return;
+    this.wallReturns.push({
+      t: round(event.t, 3),
+      sBefore: round(event.sBefore, 1),
+      sAfter: round(event.sAfter, 1),
+      speedKmh: round(event.speedKmh, 1),
+    });
+  }
+
+  /**
+   * Records an instant-replay flashback teleport in the lap in progress; ignored
+   * outside a lap. Flashback is free (FLASHBACK_PENALTY_MS = 0): recording the event
+   * adds no time. The event exists only so the leaderboard can explain the jump
+   * between the two samples around the teleport instead of rejecting the lap.
+   */
+  noteFlashback(event: FlashbackEvent): void {
+    if (!this.recording) return;
+    if (this.flashbacks.length >= FLASHBACK_LIMITS.maxPerLap) return;
+    if (!Number.isFinite(event.t) || !Number.isFinite(event.sBefore) || !Number.isFinite(event.sAfter) || !Number.isFinite(event.speedKmh)) return;
+    this.flashbacks.push({
+      t: round(event.t, 3),
+      sBefore: round(event.sBefore, 1),
+      sAfter: round(event.sAfter, 1),
+      speedKmh: round(event.speedKmh, 1),
+    });
+  }
+
+  /** Adds this update to the lap in progress: penalties and a sample when one is due. Whole-lap invalidation was abolished: nothing here ever sets valid to false any more. */
   private collect(input: LapRecorderInput): void {
     if (!this.recording) return;
-    // The physics' own verdict when it judges track limits, else any moment off the track
-    if (input.telemetry.lapInvalid ?? input.telemetry.offTrack) this.valid = false;
+    // Autopilot: +30000 ms once per lap, however many autopilot frames it contains.
+    if (input.telemetry.aiAutopilot && !this.autopilotNoted) {
+      this.autopilotNoted = true;
+      this.autopilotPenaltyMs = AUTOPILOT_PENALTY_MS;
+    }
+    // Physics lapInvalid (no caller sets it any more, since invalidateLap is unused):
+    // safety net only, +3000 once per lap, never a deletion.
+    if (input.telemetry.lapInvalid === true && !this.lapInvalidNoted) {
+      this.lapInvalidNoted = true;
+      this.trackLimitsPenaltyMs += 3000;
+    }
+    // Non-judged physics (lapInvalid undefined): each off-track excursion is +3000,
+    // counted once on the rising edge, not once per frame. Judged physics is handled
+    // by the track-limits monitor instead, so offTrack is ignored when lapInvalid is defined.
+    const offTrack = input.telemetry.offTrack;
+    if (input.telemetry.lapInvalid === undefined && offTrack && !this.prevOffTrack) {
+      this.trackLimitsPenaltyMs += 3000;
+    }
+    this.prevOffTrack = offTrack;
     const tS = input.telemetry.currentLapTimeMs / 1000;
     if (!Number.isFinite(tS)) return;
     if (tS >= this.lastSampleT + this.period - 1e-9) {
@@ -270,30 +358,49 @@ export class LapRecorder {
   }
 
   private finishLap(input: LapRecorderInput, lapMsRaw: number, lapNumber: number): CompletedLap | null {
-    const lapMs = Math.round(lapMsRaw);
-    if (lapMs < MIN_LAP_MS || lapMs > MAX_LAP_MS) return null;
+    const rawLapMs = Math.round(lapMsRaw);
+    if (rawLapMs < MIN_LAP_MS || rawLapMs > MAX_LAP_MS) return null;
+    // A lap that ended while an excursion was still being judged (physics lastLapValid
+    // false) is no longer deleted: it is +3000 ms, folded into the track-limits penalty.
+    // The monitor cannot later add the same strike again, because its decision lands on
+    // a lap that has already closed (the simulator only notes strikes for the lap still running).
+    if (input.telemetry.lastLapValid === false) this.trackLimitsPenaltyMs += 3000;
+    // Classified time: raw driven time plus every penalty in this lap — track limits
+    // (+3 s per strike), autopilot (+30 s once) — and nothing for flashback (free).
+    // This classified time is what counts for personal bests, the local board and uploads.
+    const penaltyMs = this.trackLimitsPenaltyMs;
+    const autopilotMs = this.autopilotPenaltyMs;
+    const totalPenaltyMs = penaltyMs + autopilotMs;
+    const lapMs = rawLapMs + totalPenaltyMs;
+    if (lapMs > MAX_LAP_MS) return null;
     const rawSectors = input.telemetry.sectorTimesMs;
     const sectors: [number, number, number] = [Math.round(rawSectors[0]), Math.round(rawSectors[1]), Math.round(rawSectors[2])];
     if (!sectors.every((v) => Number.isFinite(v) && v > 0)) return null;
     if (this.rows.length < 1) return null;
 
-    // Closing sample at the lap time, never before the last recorded sample
+    // Closing sample at the raw driven lap time, never before the last recorded sample.
+    // Samples stay raw even for a penalised lap: the penalty lives only in lapTimeMs /
+    // trackLimitsPenaltyMs, never in the sample timestamps, so ghost playback is not stretched.
     const lastT = this.rows[this.rows.length - 1][0];
-    const endT = round(Math.max(lapMs / 1000, lastT), 3);
+    const endT = round(Math.max(rawLapMs / 1000, lastT), 3);
     this.rows.push(sampleRow(input, endT));
     const rows = this.rows;
-    // The physics rules out a lap that ended while an excursion was still being judged
-    const valid = this.valid && input.telemetry.lastLapValid !== false;
+    // Whole-lap invalidation was abolished: every completed lap counts, at its classified time.
+    const valid = true;
 
     // Personal best and delta, before this lap changes them
     const pbBefore = this.pb;
     const deltaToBestMs = pbBefore === null ? null : lapMs - pbBefore;
-    const isPersonalBest = valid && (pbBefore === null || lapMs < pbBefore);
+    const isPersonalBest = pbBefore === null || lapMs < pbBefore;
     if (isPersonalBest) this.pb = lapMs;
 
-    // Sector bests: the session best before this lap, then fold this lap in if valid
+    // Sector bests: the session best before this lap, then fold this lap in — except
+    // flashback laps (their sector times are corrupted by rewinding across sector
+    // boundaries: a re-recorded sector can be shorter than the real sector) and
+    // autopilot laps (their sectors were partly AI-driven, not the driver's).
+    const cleanSectors = this.flashbacks.length === 0 && autopilotMs === 0;
     const bestSectorTimesMs: [number | null, number | null, number | null] = [...this.sessionSectorBest];
-    if (valid) {
+    if (cleanSectors) {
       for (let i = 0; i < 3; i++) {
         const best = this.sessionSectorBest[i];
         if (best === null || sectors[i] < best) this.sessionSectorBest[i] = sectors[i];
@@ -329,7 +436,7 @@ export class LapRecorder {
         minSpeedKmh: minSpeed,
         bestMinSpeedKmh: bestBefore,
       });
-      if (valid && (bestBefore === null || minSpeed > bestBefore)) this.sessionCornerBest[k] = minSpeed;
+      if (cleanSectors && (bestBefore === null || minSpeed > bestBefore)) this.sessionCornerBest[k] = minSpeed;
     });
 
     const recording: LapRecording = {
@@ -346,11 +453,19 @@ export class LapRecorder {
         for (const v of row) acc.push(v);
         return acc;
       }, []),
+      ...(this.wallReturns.length > 0 ? { wallReturns: [...this.wallReturns] } : {}),
+      ...(this.flashbacks.length > 0 ? { flashbacks: [...this.flashbacks] } : {}),
+      ...(penaltyMs > 0 ? { trackLimitsPenaltyMs: penaltyMs } : {}),
+      ...(autopilotMs > 0 ? { autopilotPenaltyMs: autopilotMs } : {}),
     };
 
     const summary: LapSummaryData = {
       lapNumber,
       lapTimeMs: lapMs,
+      rawLapTimeMs: rawLapMs,
+      trackLimitsPenaltyMs: penaltyMs,
+      autopilotPenaltyMs: autopilotMs,
+      flashbackCount: this.flashbacks.length,
       valid,
       deltaToBestMs,
       isPersonalBest,
@@ -378,8 +493,23 @@ export class GhostPlayer {
     this.count = Math.floor(recording.data.length / LAP_SAMPLE_STRIDE);
   }
 
+  /** Classified lap time (raw driven time + penalties), in seconds */
   get lapTimeS(): number {
     return this.recording.lapTimeMs / 1000;
+  }
+
+  /**
+   * Raw driven time (s): the samples only run this long. For a penalised lap the
+   * ghost plays its raw samples and then stops — it does not crawl or sit at the
+   * line for the penalty seconds — while the classified time above stays penalised.
+   * Flashback adds no penalty, so it is not subtracted here.
+   */
+  get rawLapTimeS(): number {
+    return (
+      this.recording.lapTimeMs -
+      (this.recording.trackLimitsPenaltyMs ?? 0) -
+      (this.recording.autopilotPenaltyMs ?? 0)
+    ) / 1000;
   }
 
   /**
@@ -389,6 +519,14 @@ export class GhostPlayer {
   sampleAt(tS: number): LapSample | null {
     const n = this.count;
     if (n < 2 || Number.isNaN(tS)) return null;
+    // A penalised ghost's samples end at its raw driven time: past that point there
+    // is nothing left to play, so it stops instead of lingering at the line for the
+    // penalty seconds. Clean laps are untouched (raw time equals classified time).
+    if (
+      (this.recording.trackLimitsPenaltyMs ?? 0) + (this.recording.autopilotPenaltyMs ?? 0) > 0 &&
+      tS > this.rawLapTimeS + 0.001
+    )
+      return null;
     const tc = Math.min(Math.max(tS, 0), this.lapTimeS);
     const timeAt = (i: number) => this.recording.data[i * LAP_SAMPLE_STRIDE];
     if (tc < timeAt(0) - 0.25) return null;
@@ -494,6 +632,26 @@ export function validateLapRecording(raw: unknown): LapRecording | null {
     sectors.push(v);
   }
 
+  // Penalties: track limits +3000 ms per strike, autopilot +30000 ms once, flashback
+  // free (0). Each must be a non-negative multiple of its tier and the total must be
+  // smaller than the classified lap time. The raw driven time is the classified time
+  // minus all penalties, and it is the raw time — not the classified time — that the
+  // last sample must agree with. Sectors must agree with the raw time too, except on
+  // flashback laps, where rewinding across a sector boundary re-records a sector and
+  // the three sectors no longer partition the lap clock.
+  const penaltyRaw = r.trackLimitsPenaltyMs;
+  const trackLimitsPenaltyMs =
+    penaltyRaw === undefined ? 0 : typeof penaltyRaw === "number" && Number.isInteger(penaltyRaw) ? penaltyRaw : -1;
+  if (trackLimitsPenaltyMs < 0 || trackLimitsPenaltyMs % 3000 !== 0) return null;
+  const autopilotRaw = r.autopilotPenaltyMs;
+  const autopilotPenaltyMs =
+    autopilotRaw === undefined ? 0 : typeof autopilotRaw === "number" && Number.isInteger(autopilotRaw) ? autopilotRaw : -1;
+  if (autopilotPenaltyMs < 0 || (autopilotPenaltyMs !== 0 && autopilotPenaltyMs !== AUTOPILOT_PENALTY_MS)) return null;
+  const totalPenaltyMs = trackLimitsPenaltyMs + autopilotPenaltyMs;
+  if (totalPenaltyMs >= lapTimeMs) return null;
+  const rawLapTimeMs = lapTimeMs - totalPenaltyMs;
+  if (rawLapTimeMs < MIN_LAP_MS) return null;
+
   const src: unknown[] = Array.isArray(r.data) ? r.data : [];
   if (src.length === 0 || src.length > MAX_NUMBERS) return null;
   if (src.length % LAP_SAMPLE_STRIDE !== 0 || src.length / LAP_SAMPLE_STRIDE < 2) return null;
@@ -509,9 +667,42 @@ export function validateLapRecording(raw: unknown): LapRecording | null {
   data.splice(0, outLapPrefixRows(data) * LAP_SAMPLE_STRIDE);
   const samples = data.length / LAP_SAMPLE_STRIDE;
   if (samples < 2) return null;
-  if (Math.abs(data[(samples - 1) * LAP_SAMPLE_STRIDE] - lapTimeMs / 1000) > 1.5) return null;
+  if (Math.abs(data[(samples - 1) * LAP_SAMPLE_STRIDE] - rawLapTimeMs / 1000) > 1.5) return null;
 
   const [sector1, sector2, sector3] = sectors;
+  // Wall-return events are kept only when they are well-formed and within the per-lap limit;
+  // the leaderboard still checks each jump against its event, so a forged event cannot hide a large jump.
+  let wallReturns: WallReturnEvent[] | undefined;
+  if (Array.isArray(r.wallReturns) && r.wallReturns.length > 0 && r.wallReturns.length <= WALL_RETURN_LIMITS.maxPerLap) {
+    const parsed: WallReturnEvent[] = [];
+    let ok = true;
+    for (const ev of r.wallReturns) {
+      if (typeof ev !== "object" || ev === null) { ok = false; break; }
+      const e = ev as Record<string, unknown>;
+      if (!finite(e.t) || !finite(e.sBefore) || !finite(e.sAfter) || !finite(e.speedKmh)) { ok = false; break; }
+      if ((e.speedKmh as number) < 0 || (e.speedKmh as number) > WALL_RETURN_LIMITS.maxSpeedKmh) { ok = false; break; }
+      parsed.push({ t: e.t as number, sBefore: e.sBefore as number, sAfter: e.sAfter as number, speedKmh: e.speedKmh as number });
+    }
+    if (ok) wallReturns = parsed;
+  }
+  // Flashback events are kept on the same terms (well-formed, within the per-lap limit,
+  // resume speed within the plausibility cap); a malformed list is dropped, not fatal.
+  // Sectors are only checked against the raw time when there is no flashback: after a
+  // rewind across a sector boundary the recorded sectors no longer partition the lap clock.
+  let flashbacks: FlashbackEvent[] | undefined;
+  if (Array.isArray(r.flashbacks) && r.flashbacks.length > 0 && r.flashbacks.length <= FLASHBACK_LIMITS.maxPerLap) {
+    const parsed: FlashbackEvent[] = [];
+    let ok = true;
+    for (const ev of r.flashbacks) {
+      if (typeof ev !== "object" || ev === null) { ok = false; break; }
+      const e = ev as Record<string, unknown>;
+      if (!finite(e.t) || !finite(e.sBefore) || !finite(e.sAfter) || !finite(e.speedKmh)) { ok = false; break; }
+      if ((e.speedKmh as number) < 0 || (e.speedKmh as number) > FLASHBACK_LIMITS.maxSpeedKmh) { ok = false; break; }
+      parsed.push({ t: e.t as number, sBefore: e.sBefore as number, sAfter: e.sAfter as number, speedKmh: e.speedKmh as number });
+    }
+    if (ok) flashbacks = parsed;
+  }
+  if (!flashbacks && Math.abs(sectors[0] + sectors[1] + sectors[2] - rawLapTimeMs) > 1000) return null;
   return {
     version: 1,
     trackId,
@@ -523,5 +714,9 @@ export function validateLapRecording(raw: unknown): LapRecording | null {
     recordedAt,
     sampleHz,
     data,
+    ...(wallReturns ? { wallReturns } : {}),
+    ...(flashbacks ? { flashbacks } : {}),
+    ...(trackLimitsPenaltyMs > 0 ? { trackLimitsPenaltyMs } : {}),
+    ...(autopilotPenaltyMs > 0 ? { autopilotPenaltyMs } : {}),
   };
 }

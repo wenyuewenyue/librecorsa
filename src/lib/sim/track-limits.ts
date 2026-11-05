@@ -9,8 +9,10 @@
  *   - a strike can be cancelled by giving the advantage back within `GIVE_BACK_WINDOW_S`: lose the time gained
  *     (with a reference lap), or lift and coast for long enough (without one).
  *
- * In practice a strike deletes the lap. In a race every strike is a warning, and every `STRIKES_PER_PENALTY`th strike
- * is a time penalty: +3 s the first time, +5 s after that.
+ * In practice a strike no longer deletes the lap: every strike adds `PRACTICE_PENALTY_S` (+3 s) to that lap's
+ * classified time, and strikes in one lap accumulate (+3 s each). The lap stays valid, so it can set a personal
+ * best and be uploaded — always with the penalised time, never the raw cut time. In a race every strike is a
+ * warning, and every `STRIKES_PER_PENALTY`th strike is a time penalty: +3 s the first time, +5 s after that.
  */
 import type { TrackLimitsReason, TrackLimitsStatus } from "@/types/f1";
 
@@ -45,6 +47,8 @@ const MESSAGE_HOLD_MS = 4200;
 export const STRIKES_PER_PENALTY = 3;
 export const FIRST_PENALTY_S = 3;
 export const REPEAT_PENALTY_S = 5;
+/** Practice penalty per strike (s): the same value as a race's first penalty, never the +5 s repeat value */
+export const PRACTICE_PENALTY_S = FIRST_PENALTY_S;
 
 export type TrackLimitsSession = "practice" | "race";
 
@@ -107,6 +111,9 @@ export class TrackLimitsMonitor {
   private totalStrikes = 0;
   private penalties = 0;
   private penaltyS = 0;
+  /** Practice penalty (s) belonging to the lap currently being judged, reset when the lap changes */
+  private lapPenaltyS = 0;
+  private lapPenaltyLap: number | null = null;
   private lastOnTrackPosition: number | null = null;
   private exc: Excursion | null = null;
   private message: TrackLimitsStatus["message"] = null;
@@ -126,6 +133,8 @@ export class TrackLimitsMonitor {
     this.totalStrikes = 0;
     this.penalties = 0;
     this.penaltyS = 0;
+    this.lapPenaltyS = 0;
+    this.lapPenaltyLap = null;
     this.lastOnTrackPosition = null;
     this.exc = null;
     this.message = null;
@@ -138,6 +147,11 @@ export class TrackLimitsMonitor {
   /** Time penalties so far (s) */
   get penaltyTotalS(): number {
     return this.penaltyS;
+  }
+
+  /** Practice penalty (s) for the lap currently being judged; 0 in a race or when no strike hit this lap */
+  get practiceLapPenaltyS(): number {
+    return this.lapPenaltyS;
   }
 
   get strikes(): number {
@@ -154,6 +168,12 @@ export class TrackLimitsMonitor {
     if (!f.active) {
       this.exc = null;
       return null;
+    }
+    // A new lap starts with no practice penalty yet: a strike decided after the line
+    // belongs to the lap it started in, not to the lap now running.
+    if (this.lapPenaltyLap !== null && this.lapPenaltyLap !== f.lapCount) {
+      this.lapPenaltyS = 0;
+      this.lapPenaltyLap = null;
     }
     const e = this.exc;
     if (!e) {
@@ -316,11 +336,11 @@ export class TrackLimitsMonitor {
       kind === "cleared"
         ? {
             kind,
-            text: wasOvertake ? "Position handed back" : "Advantage given back",
-            detail: "No further action",
+            text: wasOvertake ? "位置已归还" : "优势已归还",
+            detail: "无需进一步处罚",
             atMs: f.nowMs,
           }
-        : { kind, text: "Track limits", detail: "No advantage · no action", atMs: f.nowMs };
+        : { kind, text: "赛道限制", detail: "无优势 · 无处罚", atMs: f.nowMs };
     return { kind, lap };
   }
 
@@ -330,15 +350,32 @@ export class TrackLimitsMonitor {
     this.totalStrikes++;
     const why =
       reason === "illegal_overtake"
-        ? "Illegal overtake · position not returned"
+        ? "非法超车 · 位置未归还"
         : reason === "corner_cut"
-          ? "Corner cut"
+          ? "切弯"
           : reason === "not_lifted"
-            ? "Did not lift"
-            : "Time gained";
+            ? "未收油"
+            : "获得时间优势";
     if (this.session === "practice") {
-      this.message = { kind: "lap_invalid", text: "Track limits · lap deleted", detail: why, atMs: f.nowMs };
-      return { kind: "lap_invalid", reason, lap };
+      // Practice no longer deletes the lap: every strike, whatever its reason, adds
+      // +3 s to the lap it started in. Strikes accumulate, one +3 s each.
+      const seconds = PRACTICE_PENALTY_S;
+      this.penalties++;
+      this.penaltyS += seconds;
+      if (lap === f.lapCount) {
+        if (this.lapPenaltyLap !== lap) {
+          this.lapPenaltyS = 0;
+          this.lapPenaltyLap = lap;
+        }
+        this.lapPenaltyS += seconds;
+      }
+      this.message = {
+        kind: "penalty",
+        text: `+${seconds.toFixed(1)}秒罚时`,
+        detail: `赛道限制 · ${why}`,
+        atMs: f.nowMs,
+      };
+      return { kind: "penalty", reason, penaltyS: seconds, lap };
     }
     if (reason === "illegal_overtake") {
       const seconds = REPEAT_PENALTY_S;
@@ -346,7 +383,7 @@ export class TrackLimitsMonitor {
       this.penaltyS += seconds;
       this.message = {
         kind: "penalty",
-        text: `+${seconds.toFixed(1)}s time penalty`,
+        text: `+${seconds.toFixed(1)}秒罚时`,
         detail: why,
         atMs: f.nowMs,
       };
@@ -360,15 +397,15 @@ export class TrackLimitsMonitor {
       this.warnings = 0;
       this.message = {
         kind: "penalty",
-        text: `+${seconds.toFixed(1)}s time penalty`,
-        detail: `Track limits · ${why.toLowerCase()}`,
+        text: `+${seconds.toFixed(1)}秒罚时`,
+        detail: `赛道限制 · ${why.toLowerCase()}`,
         atMs: f.nowMs,
       };
       return { kind: "penalty", reason, penaltyS: seconds, lap };
     }
     this.message = {
       kind: "warning",
-      text: `Track limits · warning ${this.warnings}/${STRIKES_PER_PENALTY}`,
+      text: `赛道限制 · 警告 ${this.warnings}/${STRIKES_PER_PENALTY}`,
       detail: why,
       atMs: f.nowMs,
     };

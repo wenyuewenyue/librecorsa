@@ -58,26 +58,26 @@ export interface SkyCoverSpec {
 }
 
 export const SKY_COVER_SPECS: Record<SkyCoverId, SkyCoverSpec> = {
-  clear: { index: 0, label: 'Clear', cloud: 0.0, rain: 0.0, defaultRainChance: 0, defaultHumidityPct: 45 },
-  light_clouds: { index: 1, label: 'Light Clouds', cloud: 0.22, rain: 0.0, defaultRainChance: 0, defaultHumidityPct: 50 },
-  partially_cloudy: { index: 2, label: 'Partially Cloudy', cloud: 0.45, rain: 0.0, defaultRainChance: 5, defaultHumidityPct: 55 },
-  mostly_cloudy: { index: 3, label: 'Mostly Cloudy', cloud: 0.7, rain: 0.0, defaultRainChance: 15, defaultHumidityPct: 62 },
-  overcast: { index: 4, label: 'Overcast', cloud: 0.85, rain: 0.0, defaultRainChance: 25, defaultHumidityPct: 70 },
-  cloudy_drizzle: { index: 5, label: 'Cloudy & Drizzle', cloud: 0.78, rain: 0.15, defaultRainChance: 60, defaultHumidityPct: 78 },
-  cloudy_light_rain: { index: 6, label: 'Cloudy & Light Rain', cloud: 0.85, rain: 0.28, defaultRainChance: 75, defaultHumidityPct: 84 },
-  overcast_light_rain: { index: 7, label: 'Overcast & Light Rain', cloud: 0.92, rain: 0.35, defaultRainChance: 85, defaultHumidityPct: 88 },
-  overcast_rain: { index: 8, label: 'Overcast & Rain', cloud: 0.96, rain: 0.58, defaultRainChance: 95, defaultHumidityPct: 92 },
-  overcast_heavy_rain: { index: 9, label: 'Overcast & Heavy Rain', cloud: 1.0, rain: 0.85, defaultRainChance: 100, defaultHumidityPct: 96 },
-  overcast_storm: { index: 10, label: 'Overcast & Storm', cloud: 1.0, rain: 1.0, defaultRainChance: 100, defaultHumidityPct: 99 },
+  clear: { index: 0, label: '晴朗', cloud: 0.0, rain: 0.0, defaultRainChance: 0, defaultHumidityPct: 45 },
+  light_clouds: { index: 1, label: '少云', cloud: 0.22, rain: 0.0, defaultRainChance: 0, defaultHumidityPct: 50 },
+  partially_cloudy: { index: 2, label: '多云', cloud: 0.45, rain: 0.0, defaultRainChance: 5, defaultHumidityPct: 55 },
+  mostly_cloudy: { index: 3, label: '大部多云', cloud: 0.7, rain: 0.0, defaultRainChance: 15, defaultHumidityPct: 62 },
+  overcast: { index: 4, label: '阴天', cloud: 0.85, rain: 0.0, defaultRainChance: 25, defaultHumidityPct: 70 },
+  cloudy_drizzle: { index: 5, label: '阴云有毛毛雨', cloud: 0.78, rain: 0.15, defaultRainChance: 60, defaultHumidityPct: 78 },
+  cloudy_light_rain: { index: 6, label: '阴云小雨', cloud: 0.85, rain: 0.28, defaultRainChance: 75, defaultHumidityPct: 84 },
+  overcast_light_rain: { index: 7, label: '阴天小雨', cloud: 0.92, rain: 0.35, defaultRainChance: 85, defaultHumidityPct: 88 },
+  overcast_rain: { index: 8, label: '阴天有雨', cloud: 0.96, rain: 0.58, defaultRainChance: 95, defaultHumidityPct: 92 },
+  overcast_heavy_rain: { index: 9, label: '阴天大雨', cloud: 1.0, rain: 0.85, defaultRainChance: 100, defaultHumidityPct: 96 },
+  overcast_storm: { index: 10, label: '阴天暴雨', cloud: 1.0, rain: 1.0, defaultRainChance: 100, defaultHumidityPct: 99 },
 };
 
 /** 8 compass wind octants (0 = N, 1 = NE, 2 = E, 3 = SE, 4 = S, 5 = SW, 6 = W, 7 = NW) */
 export type WindDirectionOctant = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
-export const WIND_OCTANT_LABELS: readonly string[] = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+export const WIND_OCTANT_LABELS: readonly string[] = ['北', '东北', '东', '东南', '南', '西南', '西', '西北'];
 
 /** 5-node session weather schedule checkpoints (Start, 25%, 50%, 75%, Finish) */
 export const WEATHER_NODE_FRACTIONS = [0, 0.25, 0.5, 0.75, 1] as const;
-export const WEATHER_NODE_LABELS = ['Start', '25%', '50%', '75%', 'Finish'] as const;
+export const WEATHER_NODE_LABELS = ['起点', '25%', '50%', '75%', '终点'] as const;
 
 export interface WeatherNode {
   sky: SkyCoverId;
@@ -123,21 +123,21 @@ export const DEFAULT_SESSION_CONDITIONS: Readonly<SessionConditions> = {
 };
 
 export const WEATHER_LABELS: Record<WeatherPresetId, { label: string; detail: string }> = {
-  clear: { label: 'Clear', detail: 'Dry, sunny' },
-  overcast: { label: 'Overcast', detail: 'Dry, grey sky, cooler track' },
-  light_rain: { label: 'Light rain', detail: 'Wet track, intermediates' },
-  heavy_rain: { label: 'Heavy rain', detail: 'Standing water, full wets' },
-  drying: { label: 'Drying', detail: 'Rain has stopped, a dry line appears' },
-  dynamic: { label: 'Dynamic', detail: 'Changes during the session' },
+  clear: { label: '晴天', detail: '干燥、晴朗' },
+  overcast: { label: '阴天', detail: '干燥、灰蒙天空、赛道温度更低' },
+  light_rain: { label: '小雨', detail: '湿滑赛道，半雨胎' },
+  heavy_rain: { label: '大雨', detail: '积水，全雨胎' },
+  drying: { label: '赛道变干', detail: '雨已停，出现干线' },
+  dynamic: { label: '动态天气', detail: '比赛期间会变化' },
 };
 
 export const TIME_OF_DAY_LABELS: Record<TimeOfDayId, string> = {
-  dawn: 'Dawn',
-  morning: 'Morning',
-  noon: 'Noon',
-  afternoon: 'Afternoon',
-  golden_hour: 'Golden hour',
-  dusk: 'Dusk',
+  dawn: '黎明',
+  morning: '上午',
+  noon: '正午',
+  afternoon: '下午',
+  golden_hour: '黄金时刻',
+  dusk: '黄昏',
 };
 
 // ---------------------------------------------------------------------------

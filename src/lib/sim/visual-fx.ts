@@ -18,7 +18,8 @@ import type { SimulatorWheel as SimWheelState } from './simulator-car';
 import { InterpolatedPeerState } from './multiplayer-sync';
 
 const MAX_SKID_SEGMENTS = 900; // Ring buffer of 4-vertex quad segments across all 4 wheels
-const MAX_PARTICLES = 180;
+// Raised from 180 so a rainbow exhaust trail does not starve the tyre smoke pool
+const MAX_PARTICLES = 240;
 
 interface ParticleInstance {
   active: boolean;
@@ -48,6 +49,11 @@ export class SimVisualFxManager {
   private particleCursor = 0;
   private emitTimer = 0;
   private dummy = new THREE.Object3D();
+  /** Activation-code rainbow exhaust for the local car (false: no rainbow particles) */
+  public rainbowEnabled = false;
+  /** Rainbow hue clock (s): particles take the hue at their emission time, so the trail cycles */
+  private rainbowTimeS = 0;
+  private rainbowEmitTimer = 0;
   /** Road wetness under the player's car (0..1): rear-wheel spray at speed */
   private wetness = 0;
 
@@ -145,7 +151,9 @@ export class SimVisualFxManager {
     carWorldQuat: THREE.Quaternion,
     carSpeedMs: number,
     wheels: readonly [SimWheelState, SimWheelState, SimWheelState, SimWheelState],
-    peers: InterpolatedPeerState[]
+    peers: InterpolatedPeerState[],
+    carWorldPos?: THREE.Vector3,
+    throttle?: number
   ): void {
     const carRight = new THREE.Vector3(1, 0, 0).applyQuaternion(carWorldQuat);
     const carUp = new THREE.Vector3(0, 1, 0).applyQuaternion(carWorldQuat);
@@ -241,6 +249,33 @@ export class SimVisualFxManager {
             w.surfaceType === 'grass' ? 0x7c5836 : 0xcbd5e1
           );
         }
+      }
+    }
+
+    // Rainbow exhaust: from the rear exhaust position, only while throttling and moving.
+    // One small particle at a low rate keeps the trail visible without flooding the pool.
+    if (this.rainbowEnabled && carWorldPos && (throttle ?? 0) > 0.1 && carSpeedMs > 3.5) {
+      this.rainbowTimeS += dt;
+      this.rainbowEmitTimer += dt;
+      if (this.rainbowEmitTimer >= 0.03) {
+        this.rainbowEmitTimer = 0;
+        const hue = (this.rainbowTimeS * 0.12) % 1;
+        const exhaust = carWorldPos
+          .clone()
+          .addScaledVector(carForward, -2.1)
+          .addScaledVector(carUp, 0.45);
+        this.spawnParticle(
+          exhaust.x,
+          exhaust.y,
+          exhaust.z,
+          carForward,
+          carUp,
+          carSpeedMs,
+          0.35,
+          2.0,
+          0.9,
+          new THREE.Color().setHSL(hue, 1, 0.55).getHex()
+        );
       }
     }
 
@@ -505,6 +540,27 @@ export class SimVisualFxManager {
 
       carRig.updateFromTelemetry(syntheticTelemetry, pitchRad, rollRad, wheelRot);
 
+      // Opponent rainbow exhaust (activation-code run, synced over P2P): same trail as the
+      // local car, emitted behind the peer car at a low rate so several rainbow cars stay cheap.
+      const peerSpeedMsForRainbow = peer.speedKmh / 3.6;
+      if (peer.rainbow && !peer.ghost && peer.speedKmh > 12 && peer.throttle > 0.1 && Math.random() < 0.6) {
+        const peerFwd = new THREE.Vector3(0, 0, 1).applyQuaternion(peer.quaternion);
+        const peerUp = new THREE.Vector3(0, 1, 0).applyQuaternion(peer.quaternion);
+        const hue = ((performance.now() * 0.00012) % 1 + 0.5) % 1;
+        this.spawnParticle(
+          peer.position.x - peerFwd.x * 2.1,
+          peer.position.y + 0.45,
+          peer.position.z - peerFwd.z * 2.1,
+          peerFwd,
+          peerUp,
+          peerSpeedMsForRainbow,
+          0.35,
+          2.0,
+          0.9,
+          new THREE.Color().setHSL(hue, 1, 0.55).getHex()
+        );
+      }
+
       // Opponent car rooster-tail water spray plume in wet conditions
       if (this.wetness > 0.16 && !peer.ghost && peer.speedKmh > 55) {
         const peerSpeedMs = peer.speedKmh / 3.6;
@@ -538,12 +594,19 @@ export class SimVisualFxManager {
   }
 }
 
-/** Makes a car translucent (the best-lap ghost); new meshes from a late model load are caught on later calls */
+/** Makes a car translucent (the best-lap ghost); new meshes from a late model load are caught on later calls.
+ * The ghost also draws after the racing line (line renderOrder 2): both are
+ * transparent and neither writes depth, so in the default order the line —
+ * drawn later — painted straight over the ghost body wherever they overlapped
+ * on screen, which read as the line sitting on top of the car. Drawing the
+ * ghost last makes the line show through the translucent body instead, the
+ * way a ghost should look. */
 function ghostify(root: THREE.Object3D): void {
   root.traverse((obj) => {
     const mesh = obj as THREE.Mesh;
     if (!mesh.isMesh) return;
     mesh.castShadow = false;
+    mesh.renderOrder = 3;
     const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
     if (mats.every((m) => m.userData.ghost)) return;
     const next = mats.map((m) => {

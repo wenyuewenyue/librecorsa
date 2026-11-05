@@ -28,9 +28,9 @@ export const SIM_REALISM_FLAGS: Readonly<Record<SimRealism, Readonly<SimRealismF
 export const FULL_REALISM: Readonly<SimRealismFlags> = SIM_REALISM_FLAGS.full;
 
 export const SIM_REALISM_LABELS: Record<SimRealism, { label: string; detail: string }> = {
-  casual: { label: "Casual", detail: "No tyre wear or fuel use, forgiving tyre temperatures, milder rain" },
-  standard: { label: "Standard", detail: "Wear and fuel on, softened tyre temperatures, most of the rain" },
-  full: { label: "Full", detail: "Complete tyre, fuel and wet-weather model" },
+  casual: { label: "休闲", detail: "无轮胎磨损、无燃油消耗，轮胎温度影响宽容，雨势较弱" },
+  standard: { label: "标准", detail: "轮胎磨损与燃油开启，轮胎温度影响减弱，大部分雨势" },
+  full: { label: "完整", detail: "完整的轮胎、燃油与湿地模型" },
 };
 
 /** Tyre-temperature grip with the realism level's share of the loss applied */

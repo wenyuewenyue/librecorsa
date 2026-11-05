@@ -84,6 +84,7 @@ import {
   wetWearScale,
 } from '../wet-tyres';
 import { FULL_REALISM, realismThermalGrip, type SimRealismFlags } from '../sim-realism';
+import { NO_BUFF, type BuffPack } from '../buff-pack';
 import {
   type AeroRideHeightMap,
   type AxleSuspensionData,
@@ -608,6 +609,8 @@ export class VehiclePhysics {
   public readonly wheelbaseM: number;
   /** Road-wheel angle at full lock (rad); the garage's steering ratio changes it */
   public maxSteerRad: number;
+  /** Activation-code buff multipliers (all 1 when no buff is active) */
+  public buff: BuffPack = NO_BUFF;
   /** Garage: static toe per axle (rad, + = toe-in), engine braking and brake duct cooling relative to the baseline */
   public staticToeRad = { front: 0, rear: 0 };
   public engineBrakingScale = 1;
@@ -1664,7 +1667,8 @@ export class VehiclePhysics {
           degradation *
           g.grip *
           this.trackEvolution.gripMultiplier *
-          wet;
+          wet *
+          this.buff.grip;
 
         // Camber grip: leaning into the force direction (force opposes the slip)
         const forceSign = w.tanSlipAngle > 0 ? -1 : 1;
@@ -1951,6 +1955,9 @@ export class VehiclePhysics {
     let tIce =
       (plate * this.luts.power.evaluate(rpm) * engineMapTorqueScale * 1000) / omegaE -
       (1 - plate) * this.luts.coast.evaluate(rpm) * mode.coastTorqueScale * this.engineBrakingScale;
+    // Activation-code low-speed acceleration: at full throttle the coast term is zero, so
+    // scaling the whole positive torque is the exact drive-torque multiplier there.
+    if (tIce > 0 && this.velocity.length() < this.buff.lowSpeedMs) tIce *= this.buff.lowSpeedAccel;
     if (this.shiftTimer > 0 && tIce > 0) tIce *= gb.shiftTorqueFraction;
     // Turbo lag: while the boost still trails the demand (≈0.14 s spool), up to TURBO_LAG_TORQUE_LOSS of the torque
     // is missing. Kept small: the torque curve is the steady-state, full-boost one
@@ -2034,7 +2041,7 @@ export class VehiclePhysics {
     const rearDriveBrake = inp.brake > 0.05 && br.brakeByWire !== false ? (crankBrake * engage * Math.abs(ratio) * gb.efficiency) / 2 : 0;
     for (let i = 0; i < 4; i++) {
       const w = W[i];
-      const demand = inp.brake * (inp.brakeWheelScale ? inp.brakeWheelScale[i] : 1) * br.maxTorqueNm * (w.isFront ? bias : 1 - bias);
+      const demand = inp.brake * (inp.brakeWheelScale ? inp.brakeWheelScale[i] : 1) * br.maxTorqueNm * (w.isFront ? bias : 1 - bias) * this.buff.brake;
       // Pad μ(T) of the disc (1 in its window, a mild loss cold or faded)
       const friction = (w.isFront ? demand : Math.max(0, demand - rearDriveBrake)) * w.brakeDisc.muFactor;
       const tyre = this.tyres[w.isFront ? 0 : 1].data.modelData;
@@ -2194,7 +2201,7 @@ export class VehiclePhysics {
           : s.name === 'REAR_WING'
             ? wake.rearDownforceMultiplier
             : 0.5 * (wake.frontDownforceMultiplier + wake.rearDownforceMultiplier);
-      const fd = q * cl * s.area * wakeClMult;
+      const fd = q * cl * s.area * wakeClMult * this.buff.downforce;
       drag += cd * s.area * wake.dragMultiplier;
       down += fd;
       front += fd * ((s.positionZ + b) / L);
@@ -2207,7 +2214,7 @@ export class VehiclePhysics {
       [aero.front_lift, a],
       [aero.rear_lift, -b],
     ] as const) {
-      const fd = q * cl;
+      const fd = q * cl * this.buff.downforce;
       down += fd;
       if (z > 0) front += fd;
       _f.copy(_ey).multiplyScalar(-fd);
@@ -2273,8 +2280,8 @@ export class VehiclePhysics {
       rear += fd * (1 - share);
       cdA += wing.aoaCd.evaluate(aoa) * s.area;
     }
-    front *= wake.frontDownforceMultiplier;
-    rear *= wake.rearDownforceMultiplier;
+    front *= wake.frontDownforceMultiplier * this.buff.downforce;
+    rear *= wake.rearDownforceMultiplier * this.buff.downforce;
     const speed = air.length();
     const drag = 0.5 * this.airDensity * speed * speed * cdA * wake.dragMultiplier;
     const lag = (tau: number) => (tau > 0 ? Math.min(1, h / tau) : 1);

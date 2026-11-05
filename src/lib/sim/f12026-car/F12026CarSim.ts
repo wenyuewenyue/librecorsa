@@ -65,6 +65,7 @@ import {
   TrackWallQuery,
 } from './TrackColliderQuery';
 import { type VehicleEvent, type VehicleInputs, VehiclePhysics } from './VehiclePhysics';
+import { NO_BUFF, type BuffPack } from '../buff-pack';
 import { KERB_PROFILE_L } from '../track-surfaces';
 
 const G = 9.81;
@@ -354,6 +355,8 @@ const _v = new THREE.Vector3();
 
 export class F12026CarSim implements SimulatorCar {
   public readonly vehicle: VehiclePhysics;
+  /** Activation-code buff multipliers (all 1 when no buff is active); forwarded to the vehicle physics */
+  public buff: BuffPack = NO_BUFF;
   public readonly config: CarPhysicsConfig;
   public readonly telemetry: CarTelemetry;
   public readonly worldPosition = new THREE.Vector3();
@@ -1043,6 +1046,7 @@ export class F12026CarSim implements SimulatorCar {
   public step(dtSeconds: number, raw: Partial<ControlInputs>): CarTelemetry {
     if (!Number.isFinite(dtSeconds) || dtSeconds <= 0) return this.telemetry;
     const v = this.vehicle;
+    v.buff = this.buff;
     const inputs = {
       throttle: THREE.MathUtils.clamp(raw.throttle ?? 0, 0, 1),
       brake: THREE.MathUtils.clamp(raw.brake ?? 0, 0, 1),
@@ -1058,7 +1062,7 @@ export class F12026CarSim implements SimulatorCar {
     if (inputs.toggleXMode && this.profile.hasDrs) this.drsPressPending = true;
 
     // Push mode while the override is held / latched, or for the boost's 8 s
-    this.boostCooldownS = Math.max(0, this.boostCooldownS - dtSeconds);
+    this.boostCooldownS = Math.max(0, this.boostCooldownS - dtSeconds * this.buff.boostRecharge);
     if (this.boostRemainingS > 0) {
       this.boostRemainingS = Math.max(0, this.boostRemainingS - dtSeconds);
       if (this.boostRemainingS === 0) this.boostCooldownS = BOOST_COOLDOWN_S;
@@ -1492,8 +1496,9 @@ export class F12026CarSim implements SimulatorCar {
     const lapTime = this.simTimeMs - this.lapStartMs;
     this.onSectorCompleted(3);
     this.lapStartMs = this.simTimeMs;
-    // Judged track limits: a lap that ends while an excursion is still being judged cannot count
-    const valid = this.lapValid && !(this.trackLimitsMode === 'judged' && (this.trackLimitsHold || t.offTrack));
+    // A lap that ends while an excursion was still being judged is no longer deleted:
+    // the lap recorder converts it to +3000 ms, so lastLapValid stays true here.
+    const valid = this.lapValid;
     if (lapTime > 45_000) {
       t.lastLapTimeMs = lapTime;
       if (valid && (t.bestLapTimeMs === null || lapTime < t.bestLapTimeMs)) t.bestLapTimeMs = lapTime;
@@ -1505,7 +1510,11 @@ export class F12026CarSim implements SimulatorCar {
     t.lapInvalid = false;
   }
 
-  /** Race control deleted the running lap (judged track limits) */
+  /**
+   * Legacy: no caller uses this any more. Whole-lap invalidation was abolished in
+   * favour of time penalties, so this method is kept only so older call sites and
+   * the SimulatorCar interface still compile; laps are penalised, never deleted.
+   */
   public invalidateLap(): void {
     this.lapValid = false;
     this.telemetry.lapInvalid = true;
