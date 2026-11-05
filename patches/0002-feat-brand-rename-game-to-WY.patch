@@ -1,0 +1,111 @@
+From 5016b4e369e01ca7cc27cac965fa1093cc889897 Mon Sep 17 00:00:00 2001
+From: Muse <muse@localhost>
+Date: Sun, 1 Nov 2026 22:33:38 +0800
+Subject: [PATCH 2/9] =?UTF-8?q?feat(brand):=20rename=20game=20to=20WY?=
+ =?UTF-8?q?=E8=B5=9B=E8=BD=A6?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+User-visible name only: page title and application name, logo
+wordmark (WY white + 赛车 volt, same sizes and classes, so layout
+is unchanged except the wordmark is narrower), loading-screen and
+pause-menu footers, and the multiplayer share title. Internal code
+names, storage keys, driver-key file, domains and Pages project are
+unchanged, so settings, leaderboard keys and URLs keep working.
+---
+ src/app/layout.tsx                      | 4 ++--
+ src/components/hud/MultiplayerPanel.tsx | 2 +-
+ src/components/hud/PauseMenu.tsx        | 2 +-
+ src/components/menu/LoadingScreen.tsx   | 2 +-
+ src/components/ui/LibreCorsaLogo.tsx    | 6 +++---
+ 5 files changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/src/app/layout.tsx b/src/app/layout.tsx
+index 009cdbb..41db464 100644
+--- a/src/app/layout.tsx
++++ b/src/app/layout.tsx
+@@ -23,8 +23,8 @@ const jetbrainsMono = JetBrains_Mono({
+ });
+ 
+ export const metadata: Metadata = {
+-  title: "LibreCorsa",
+-  applicationName: "LibreCorsa",
++  title: "WY赛车",
++  applicationName: "WY赛车",
+   // Metadata URLs don't get the GitHub Pages base path on their own
+   icons: {
+     icon: [
+diff --git a/src/components/hud/MultiplayerPanel.tsx b/src/components/hud/MultiplayerPanel.tsx
+index f5e51b0..4f2d07e 100644
+--- a/src/components/hud/MultiplayerPanel.tsx
++++ b/src/components/hud/MultiplayerPanel.tsx
+@@ -246,7 +246,7 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
+     const url = getInviteUrl();
+     if (!url || typeof navigator === "undefined" || typeof navigator.share !== "function") return;
+     try {
+-      await navigator.share({ title: "LibreCorsa race", text: "加入我的比赛", url });
++      await navigator.share({ title: "WY赛车比赛", text: "加入我的比赛", url });
+     } catch {
+       // Share sheet dismissed or unavailable
+     }
+diff --git a/src/components/hud/PauseMenu.tsx b/src/components/hud/PauseMenu.tsx
+index 2a97d7e..cfe97d1 100644
+--- a/src/components/hud/PauseMenu.tsx
++++ b/src/components/hud/PauseMenu.tsx
+@@ -514,7 +514,7 @@ export const PauseMenu: React.FC<PauseMenuProps> = (props) => {
+             ]}
+           />
+           <span className="hidden font-f1-mono text-[11px] font-bold tracking-[0.12em] text-[#8E96AA] md:inline">
+-            {(TRACK_TOTAL_LENGTH_M / 1000).toFixed(2)} 公里 · {TURN_METADATA.length} 个弯 · LIBRECORSA
++            {(TRACK_TOTAL_LENGTH_M / 1000).toFixed(2)} 公里 · {TURN_METADATA.length} 个弯 · WY赛车
+           </span>
+         </div>
+       </div>
+diff --git a/src/components/menu/LoadingScreen.tsx b/src/components/menu/LoadingScreen.tsx
+index 36fa828..b5f746a 100644
+--- a/src/components/menu/LoadingScreen.tsx
++++ b/src/components/menu/LoadingScreen.tsx
+@@ -357,7 +357,7 @@ export const LoadingScreen: React.FC<{
+             {trackInfo.name.toUpperCase()} · {(track.totalLengthM / 1000).toFixed(2)} KM · {TURN_METADATA.length} 个弯
+             {isRwanda ? " · 海拔 1400 米" : ""}
+           </span>
+-          <span className="text-[#CCFF00]/80">LIBRECORSA · 500HZ 车辆动力学</span>
++          <span className="text-[#CCFF00]/80">WY赛车 · 500HZ 车辆动力学</span>
+         </footer>
+       </div>
+ 
+diff --git a/src/components/ui/LibreCorsaLogo.tsx b/src/components/ui/LibreCorsaLogo.tsx
+index 0caa029..44d7534 100644
+--- a/src/components/ui/LibreCorsaLogo.tsx
++++ b/src/components/ui/LibreCorsaLogo.tsx
+@@ -2,7 +2,7 @@ import React from "react";
+ 
+ export interface LibreCorsaLogoProps {
+   /**
+-   * - "full": emblem + LIBRECORSA wordmark + subtitle rule
++   * - "full": emblem + WY赛车 wordmark + subtitle rule
+    * - "compact": emblem + wordmark (headers, the HUD)
+    * - "mark": the emblem alone (favicon, wheel badge)
+    */
+@@ -23,7 +23,7 @@ const SIZES = {
+  * The LC emblem: a forward-leaning volt "L" with a white "C" nested in its corner like a car
+  * taking an apex. The C's apex is painted as a red / white kerb and a cyan streak leaves the exit.
+  */
+-export const LibreCorsaMark: React.FC<{ className?: string; title?: string }> = ({ className = "h-10 w-10", title = "LibreCorsa" }) => {
++export const LibreCorsaMark: React.FC<{ className?: string; title?: string }> = ({ className = "h-10 w-10", title = "WY赛车" }) => {
+   const uid = React.useId().replace(/:/g, "");
+   return (
+     <svg viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" className={className} role="img" aria-label={title}>
+@@ -80,7 +80,7 @@ export const LibreCorsaLogo: React.FC<LibreCorsaLogoProps> = ({
+           className={`font-f1-display leading-none font-black tracking-[0.06em] text-[#F5F7FA] italic ${s.word}`}
+           style={{ textShadow: "0 2px 18px rgba(0,0,0,0.6)" }}
+         >
+-          LIBRE<span className="text-[#CCFF00]">CORSA</span>
++          WY<span className="text-[#CCFF00]">赛车</span>
+         </div>
+         {variant === "full" ? (
+           <div className="mt-2 flex items-center gap-2">
+-- 
+2.43.0
+

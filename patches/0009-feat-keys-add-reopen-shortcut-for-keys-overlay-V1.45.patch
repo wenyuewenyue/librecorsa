@@ -1,0 +1,224 @@
+From 86a6600484cf3d065eb7737aaab14283198bb66c Mon Sep 17 00:00:00 2001
+From: Muse <muse@localhost>
+Date: Sun, 1 Nov 2026 23:18:56 +0800
+Subject: [PATCH 9/9] feat(keys): add reopen shortcut for keys overlay V1.45
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+New rebindable action keysOverlay, default KeyH: pressing it while
+driving reopens the keys overlay after Esc closed it. The overlay
+rows (driving + pause-menu list) show 按键显示 with the bound key,
+and the hidden-state restore button shows the same key + 显示 in
+the same form as Esc 关闭. Old saves get the default via parseKeys
+merge, so no storage-key change.
+---
+ CHANGELOG.md                           |  6 +++++-
+ src/components/F1TelemetryHud.tsx      | 12 +++++++++++-
+ src/components/LibreCorsaSimulator.tsx |  6 ++++++
+ src/components/hud/KeysOverlay.tsx     |  8 ++++++--
+ src/components/hud/PauseMenu.tsx       |  1 +
+ src/lib/changelog.ts                   |  6 +++++-
+ src/lib/input/bindings.ts              |  7 +++++--
+ 7 files changed, 39 insertions(+), 7 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index c26b217..f7f515f 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -180,6 +180,10 @@
+ 
+ 新增：主菜单底部版本标识，点开查看版本日志
+ 
+-## V1.44（当前版本）
++## V1.44
+ 
+ 优化：彩蛋在自动驾驶时也生效：彩虹尾烟、撞墙回赛道
++
++## V1.45（当前版本）
++
++新增：按键显示重开快捷键，默认 H，关闭后按 H 重新打开，恢复按钮同步显示 H 显示，可在设置里重新绑定
+diff --git a/src/components/F1TelemetryHud.tsx b/src/components/F1TelemetryHud.tsx
+index 04ca268..22ce65e 100644
+--- a/src/components/F1TelemetryHud.tsx
++++ b/src/components/F1TelemetryHud.tsx
+@@ -133,6 +133,8 @@ interface F1TelemetryHudProps extends MultiplayerPanelProps {
+     rows: readonly (readonly [string, string])[];
+   };
+   keyNames?: Partial<Record<"camera" | "racingLine" | "mute" | "mouseSteer" | "autopilot" | "restart", string>>;
++  /** Label of the keys-overlay reopen shortcut (keyboard only, e.g. "H") */
++  keysOverlayKeyLabel?: string;
+   /** HUD layout preset, size and optional widgets */
+   hud?: HudSettings;
+   /** The sim draws the virtual rear-view mirror at the top centre: the notifications there move under it */
+@@ -235,8 +237,15 @@ export const F1TelemetryHud: React.FC<F1TelemetryHudProps> = (props) => {
+ 
+   // Driving keys overlay: shown by default on the driving screen. Esc closes
+   // just the overlay (capture phase, so the simulator's Esc-to-pause handler
+-  // never sees it); a second Esc then opens the pause menu as usual.
++  // never sees it); a second Esc then opens the pause menu as usual. The
++  // keys-overlay shortcut (default H, rebindable in settings) reopens it:
++  // the simulator dispatches HUD_TOGGLE_EVENT.keysOverlay for that action.
+   const [keysOverlayVisible, setKeysOverlayVisible] = useState(true);
++  useEffect(() => {
++    const onShow = () => setKeysOverlayVisible(true);
++    window.addEventListener(HUD_TOGGLE_EVENT.keysOverlay, onShow);
++    return () => window.removeEventListener(HUD_TOGGLE_EVENT.keysOverlay, onShow);
++  }, []);
+   // MFD expanded state, reported by MultiPageMfd: while it is expanded the
+   // keys overlay is suppressed entirely (see KeysOverlay), and it returns
+   // on its own when the MFD folds — keysOverlayVisible above is the
+@@ -583,6 +592,7 @@ export const F1TelemetryHud: React.FC<F1TelemetryHudProps> = (props) => {
+           visible={keysOverlayVisible}
+           onHide={() => setKeysOverlayVisible(false)}
+           onShow={() => setKeysOverlayVisible(true)}
++          reopenLabel={props.keysOverlayKeyLabel}
+           suppressed={mfdExpanded}
+         />
+       ) : null}
+diff --git a/src/components/LibreCorsaSimulator.tsx b/src/components/LibreCorsaSimulator.tsx
+index c572e74..600018b 100644
+--- a/src/components/LibreCorsaSimulator.tsx
++++ b/src/components/LibreCorsaSimulator.tsx
+@@ -1870,6 +1870,9 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
+         case "mfdPage":
+           window.dispatchEvent(new Event(HUD_TOGGLE_EVENT.mfdPage));
+           break;
++        case "keysOverlay":
++          window.dispatchEvent(new Event(HUD_TOGGLE_EVENT.keysOverlay));
++          break;
+       }
+     };
+ 
+@@ -3459,6 +3462,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
+       ["半油门", keys(k.throttleHalf)],
+       ["即时回放", keys(k.replay)],
+       ["下一页仪表", keys(k.mfdPage)],
++      ["按键显示", keys(k.keysOverlay)],
+     ];
+     const pb = settings.padButtons;
+     rows.push([
+@@ -3568,6 +3572,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
+         ["半油门", keys(k.throttleHalf)],
+         ["即时回放", keys(k.replay)],
+         ["下一页仪表", keys(k.mfdPage)],
++        ["按键显示", keys(k.keysOverlay)],
+         ["保留按键", "Esc 暂停菜单 · / 输入 /boost"],
+       ],
+     };
+@@ -3730,6 +3735,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
+           onExitToTitle={exitToTitle}
+           controlsCheatSheet={controlsCheatSheet}
+           drivingControls={drivingControls}
++          keysOverlayKeyLabel={settings.keys.keysOverlay[0] ? keyLabel(settings.keys.keysOverlay[0]) : undefined}
+           hud={settings.hud}
+           virtualMirror={virtualMirrorOn}
+           ffbMeter={
+diff --git a/src/components/hud/KeysOverlay.tsx b/src/components/hud/KeysOverlay.tsx
+index e1e957c..2b43309 100644
+--- a/src/components/hud/KeysOverlay.tsx
++++ b/src/components/hud/KeysOverlay.tsx
+@@ -40,11 +40,15 @@ export const KeysOverlay: React.FC<{
+   visible: boolean;
+   onHide: () => void;
+   onShow: () => void;
++  /** Label of the reopen shortcut (keyboard only, e.g. "H"); shown on the
++   * restore button in the same "key + action" form as "Esc 关闭" */
++  reopenLabel?: string;
+   /** MFD expanded: render nothing at all (see header comment) */
+   suppressed?: boolean;
+-}> = ({ rows, mode = "keyboard", visible, onHide, onShow, suppressed = false }) => {
++}> = ({ rows, mode = "keyboard", visible, onHide, onShow, reopenLabel, suppressed = false }) => {
+   if (suppressed) return null;
+   if (!visible) {
++    const showLabel = mode === "keyboard" && reopenLabel ? `${reopenLabel} 显示` : "按键";
+     return (
+       <button
+         type="button"
+@@ -52,7 +56,7 @@ export const KeysOverlay: React.FC<{
+         aria-label="显示操作说明"
+         className="pointer-events-auto absolute right-2 top-1/2 inline-flex h-8 -translate-y-1/2 cursor-pointer items-center px-1 text-[12px] font-bold text-[#F5F7FA] [text-shadow:0_1px_3px_rgba(0,0,0,0.9),0_0_6px_rgba(0,0,0,0.6)] sm:right-3"
+       >
+-        按键
++        {showLabel}
+       </button>
+     );
+   }
+diff --git a/src/components/hud/PauseMenu.tsx b/src/components/hud/PauseMenu.tsx
+index cfe97d1..2c35193 100644
+--- a/src/components/hud/PauseMenu.tsx
++++ b/src/components/hud/PauseMenu.tsx
+@@ -655,6 +655,7 @@ export const SessionPanel: React.FC<PauseMenuProps> = (p) => {
+               ["半油门", "F"],
+               ["即时回放", "T"],
+               ["下一页仪表", "Ins · I"],
++              ["按键显示", "H"],
+               ["手柄 · 驾驶", "RT 油门 · LT 刹车 · 摇杆转向 · A 增压 · RB/LB 挡位"],
+               ["手柄 · 功能", "X 空力 · Y 视角 · 赛车线 — · View 重开 · Menu 菜单 · LS 仪表 · B 下一页 · RS HUD"],
+               ["保留按键", "Esc 暂停菜单 · / 输入 /boost"],
+diff --git a/src/lib/changelog.ts b/src/lib/changelog.ts
+index 8d342a9..6477dba 100644
+--- a/src/lib/changelog.ts
++++ b/src/lib/changelog.ts
+@@ -2,7 +2,7 @@
+  * for the same problem are merged into a single entry. No dates, matching
+  * the repo CHANGELOG.md (same versions, same wording). */
+ 
+-export const CURRENT_VERSION = "V1.44";
++export const CURRENT_VERSION = "V1.45";
+ 
+ export type ChangelogKind = "新增" | "优化" | "修复";
+ 
+@@ -17,6 +17,10 @@ export interface ChangelogEntry {
+ }
+ 
+ export const CHANGELOG: ChangelogEntry[] = [
++  {
++    version: "V1.45",
++    items: [{ kind: "新增", text: "按键显示重开快捷键，默认 H，关闭后按 H 重新打开，恢复按钮同步显示 H 显示，可在设置里重新绑定" }],
++  },
+   {
+     version: "V1.44",
+     items: [{ kind: "优化", text: "彩蛋在自动驾驶时也生效：彩虹尾烟、撞墙回赛道" }],
+diff --git a/src/lib/input/bindings.ts b/src/lib/input/bindings.ts
+index a6d1b8f..7bde1f9 100644
+--- a/src/lib/input/bindings.ts
++++ b/src/lib/input/bindings.ts
+@@ -21,7 +21,8 @@ export type KeyAction =
+   | "restart"
+   | "throttleHalf"
+   | "replay"
+-  | "mfdPage";
++  | "mfdPage"
++  | "keysOverlay";
+ 
+ /** Actions a controller or wheel button can trigger */
+ export type PadAction =
+@@ -61,6 +62,7 @@ export const KEY_ACTIONS: readonly { id: KeyAction; label: string }[] = [
+   { id: "throttleHalf", label: "半油门（按住）" },
+   { id: "replay", label: "即时回放" },
+   { id: "mfdPage", label: "下一页仪表" },
++  { id: "keysOverlay", label: "按键显示" },
+ ];
+ 
+ export const PAD_ACTIONS: readonly { id: PadAction; label: string }[] = [
+@@ -96,6 +98,7 @@ export const DEFAULT_KEY_BINDINGS: KeyBindings = {
+   throttleHalf: ["KeyF"],
+   replay: ["KeyT"],
+   mfdPage: ["Insert", "KeyI"],
++  keysOverlay: ["KeyH"],
+ };
+ 
+ /** Keys that cannot be bound: Esc opens the menu, "/" starts the /boost command */
+@@ -119,7 +122,7 @@ export const DEFAULT_PAD_BUTTONS: PadButtonBindings = {
+ };
+ 
+ /** Window events the game loop fires for the HUD's own pad toggles (the MFD and the HUD listen for them) */
+-export const HUD_TOGGLE_EVENT = { mfd: "lc:toggle-mfd", mfdPage: "lc:mfd-page", hud: "lc:toggle-hud" } as const;
++export const HUD_TOGGLE_EVENT = { mfd: "lc:toggle-mfd", mfdPage: "lc:mfd-page", hud: "lc:toggle-hud", keysOverlay: "lc:show-keys-overlay" } as const;
+ 
+ /** Fixed standard-mapping axes / buttons for the pedals and steering on a controller */
+ export const PAD_THROTTLE_BUTTON = 7; // RT
+-- 
+2.43.0
+

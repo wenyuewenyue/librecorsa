@@ -1,0 +1,47 @@
+From f1cc13607ecffdc2998d4b0cd6d369c0af16c8ec Mon Sep 17 00:00:00 2001
+From: Muse <muse@localhost>
+Date: Sun, 1 Nov 2026 22:42:13 +0800
+Subject: [PATCH 3/9] =?UTF-8?q?feat(brand):=20enlarge=20WY=E8=B5=9B?=
+ =?UTF-8?q?=E8=BD=A6=20wordmark=20and=20tracking=20(scheme=20A)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Word sizes: sm text-lg -> text-2xl, md text-2xl -> text-4xl,
+lg 2.6rem -> 3.8rem; word tracking 0.06em -> 0.12em. The emblem
+mark stays the tallest element in each size, so header heights
+do not change; the wordmark total width returns to roughly the
+old LIBRECORSA width. Subtitle and layout classes are unchanged.
+---
+ src/components/ui/LibreCorsaLogo.tsx | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/src/components/ui/LibreCorsaLogo.tsx b/src/components/ui/LibreCorsaLogo.tsx
+index 44d7534..73d53e5 100644
+--- a/src/components/ui/LibreCorsaLogo.tsx
++++ b/src/components/ui/LibreCorsaLogo.tsx
+@@ -14,9 +14,9 @@ export interface LibreCorsaLogoProps {
+ }
+ 
+ const SIZES = {
+-  sm: { mark: "h-8 w-8", word: "text-lg", gap: "gap-2.5", subtitle: "text-[13px]" },
+-  md: { mark: "h-11 w-11", word: "text-2xl", gap: "gap-3", subtitle: "text-[15px]" },
+-  lg: { mark: "h-16 w-16", word: "text-[2.6rem]", gap: "gap-4", subtitle: "text-[18px]" },
++  sm: { mark: "h-8 w-8", word: "text-2xl", gap: "gap-2.5", subtitle: "text-[13px]" },
++  md: { mark: "h-11 w-11", word: "text-4xl", gap: "gap-3", subtitle: "text-[15px]" },
++  lg: { mark: "h-16 w-16", word: "text-[3.8rem]", gap: "gap-4", subtitle: "text-[18px]" },
+ } as const;
+ 
+ /**
+@@ -77,7 +77,7 @@ export const LibreCorsaLogo: React.FC<LibreCorsaLogoProps> = ({
+       <LibreCorsaMark className={`${s.mark} shrink-0 drop-shadow-[0_4px_14px_rgba(204,255,0,0.18)]`} />
+       <div className="flex flex-col justify-center">
+         <div
+-          className={`font-f1-display leading-none font-black tracking-[0.06em] text-[#F5F7FA] italic ${s.word}`}
++          className={`font-f1-display leading-none font-black tracking-[0.12em] text-[#F5F7FA] italic ${s.word}`}
+           style={{ textShadow: "0 2px 18px rgba(0,0,0,0.6)" }}
+         >
+           WY<span className="text-[#CCFF00]">赛车</span>
+-- 
+2.43.0
+

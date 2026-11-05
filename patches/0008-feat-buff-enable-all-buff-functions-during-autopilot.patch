@@ -1,0 +1,87 @@
+From 5c524e30ecc0c586b777ce5be37e6505a28d08bb Mon Sep 17 00:00:00 2001
+From: Muse <muse@localhost>
+Date: Sun, 1 Nov 2026 23:15:24 +0800
+Subject: [PATCH 8/9] feat(buff): enable all buff functions during autopilot
+ V1.44
+
+Rainbow exhaust and wall-return no longer require manual driving;
+performance pack already applied at car creation regardless of
+autopilot. Changelog entry V1.44 added.
+---
+ CHANGELOG.md                           |  6 +++++-
+ src/components/LibreCorsaSimulator.tsx | 11 ++++++-----
+ src/lib/changelog.ts                   |  6 +++++-
+ 3 files changed, 16 insertions(+), 7 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 4f4e093..c26b217 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -176,6 +176,10 @@
+ 
+ 优化：Logo 大字加大、字距拉开，加载页和主界面标题更醒目
+ 
+-## V1.43（当前版本）
++## V1.43
+ 
+ 新增：主菜单底部版本标识，点开查看版本日志
++
++## V1.44（当前版本）
++
++优化：彩蛋在自动驾驶时也生效：彩虹尾烟、撞墙回赛道
+diff --git a/src/components/LibreCorsaSimulator.tsx b/src/components/LibreCorsaSimulator.tsx
+index 8aacbae..c572e74 100644
+--- a/src/components/LibreCorsaSimulator.tsx
++++ b/src/components/LibreCorsaSimulator.tsx
+@@ -2368,10 +2368,11 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
+             : null
+       );
+ 
+-      // Wall return (activation-code run only, manual driving): a car that has been fast
+-      // and is now barely moving for 2.5 s is stuck against a wall, so it is put back on
+-      // the centreline at the same spot at a low speed. Without a buff nothing changes.
+-      if (driving && buffActiveRef.current && !physics.aiAutopilot && !pausedRef.current) {
++      // Wall return (activation-code run only, manual or autopilot driving): a car
++      // that has been fast and is now barely moving for 2.5 s is stuck against a
++      // wall, so it is put back on the centreline at the same spot at a low speed.
++      // Without a buff nothing changes.
++      if (driving && buffActiveRef.current && !pausedRef.current) {
+         const wr = wallReturnRef.current;
+         const speedMs = Math.abs(physics.vxMs);
+         if (speedMs > 10) {
+@@ -2669,7 +2670,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
+       const shake = cockpitShake.update(dtSeconds, physics.telemetry);
+ 
+       // Update persistent 4-wheel skidmark ribbons, tire smoke/gravel/rooster-tail particles & opponent 3D cars
+-      visualFx.rainbowEnabled = buffActiveRef.current && !physics.aiAutopilot;
++      visualFx.rainbowEnabled = buffActiveRef.current;
+       visualFx.update(
+         dtSeconds,
+         physics.worldQuaternion,
+diff --git a/src/lib/changelog.ts b/src/lib/changelog.ts
+index 76a58f1..8d342a9 100644
+--- a/src/lib/changelog.ts
++++ b/src/lib/changelog.ts
+@@ -2,7 +2,7 @@
+  * for the same problem are merged into a single entry. No dates, matching
+  * the repo CHANGELOG.md (same versions, same wording). */
+ 
+-export const CURRENT_VERSION = "V1.43";
++export const CURRENT_VERSION = "V1.44";
+ 
+ export type ChangelogKind = "新增" | "优化" | "修复";
+ 
+@@ -17,6 +17,10 @@ export interface ChangelogEntry {
+ }
+ 
+ export const CHANGELOG: ChangelogEntry[] = [
++  {
++    version: "V1.44",
++    items: [{ kind: "优化", text: "彩蛋在自动驾驶时也生效：彩虹尾烟、撞墙回赛道" }],
++  },
+   {
+     version: "V1.43",
+     items: [{ kind: "新增", text: "主菜单底部版本标识，点开查看版本日志" }],
+-- 
+2.43.0
+
