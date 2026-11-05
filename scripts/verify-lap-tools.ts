@@ -176,28 +176,34 @@ check('first valid lap: PB, no delta, no sector or corner bests yet', () => {
   near(lap1.summary.corners[0].minSpeedKmh, 50 * 0.98 * 3.6, 1.5);
   assert.equal(lap1.summary.corners[0].bestMinSpeedKmh, null);
 });
-check('off-track lap is invalid, not a PB, and its delta is still against the PB', () => {
-  assert.equal(lap2.summary.valid, false);
-  assert.equal(lap2.summary.isPersonalBest, false);
-  assert.ok(lap2.summary.lapTimeMs < lap1.summary.lapTimeMs, 'lap 2 is the faster lap');
+check('off-track lap is penalised +3 s, not invalid, and still counts', () => {
+  assert.equal(lap2.summary.valid, true);
+  assert.equal(lap2.summary.trackLimitsPenaltyMs, 3000);
+  assert.equal(lap2.summary.lapTimeMs, lap2.summary.rawLapTimeMs + 3000);
   assert.equal(lap2.summary.deltaToBestMs, lap2.summary.lapTimeMs - lap1.summary.lapTimeMs);
-  assert.ok(lap2.summary.deltaToBestMs! < 0);
 });
-check('invalid laps do not feed the sector or corner session bests', () => {
+check('a penalised lap still feeds the session bests (its sectors are real driven sectors)', () => {
   assert.deepEqual(lap2.summary.bestSectorTimesMs, lap1.summary.sectorTimesMs);
-  assert.equal(lap2.summary.theoreticalBestMs, sumOf(lap1.summary.sectorTimesMs));
   assert.equal(lap2.summary.corners[0].bestMinSpeedKmh, lap1.summary.corners[0].minSpeedKmh);
 });
 check('faster valid lap: new PB, delta, sector bests and theoretical best', () => {
   assert.equal(lap3.summary.valid, true);
   assert.equal(lap3.summary.isPersonalBest, true);
-  assert.equal(lap3.summary.deltaToBestMs, lap3.summary.lapTimeMs - lap1.summary.lapTimeMs);
+  // Lap 2 counted (penalised) and set the personal best, so lap 3's delta is against lap 2's classified time, not lap 1's.
+  assert.equal(lap3.summary.deltaToBestMs, lap3.summary.lapTimeMs - lap2.summary.lapTimeMs);
   assert.ok(lap3.summary.deltaToBestMs! < 0);
   assert.equal(rec.personalBestMs, lap3.summary.lapTimeMs);
-  const bestSectors = lap1.summary.sectorTimesMs.map((v, i) => Math.min(v, lap3.summary.sectorTimesMs[i])) as [number, number, number];
-  assert.deepEqual(lap3.summary.bestSectorTimesMs, lap1.summary.sectorTimesMs);
-  assert.equal(lap3.summary.theoreticalBestMs, sumOf(bestSectors), 'best of each sector across the valid laps');
-  assert.equal(lap3.summary.corners[0].bestMinSpeedKmh, lap1.summary.corners[0].minSpeedKmh);
+  const bestSectors = lap1.summary.sectorTimesMs.map((v, i) =>
+    Math.min(v, lap2.summary.sectorTimesMs[i], lap3.summary.sectorTimesMs[i]),
+  ) as [number, number, number];
+  const bestBeforeLap3 = lap1.summary.sectorTimesMs.map((v, i) => Math.min(v, lap2.summary.sectorTimesMs[i])) as [
+    number,
+    number,
+    number,
+  ];
+  assert.deepEqual(lap3.summary.bestSectorTimesMs, bestBeforeLap3);
+  assert.equal(lap3.summary.theoreticalBestMs, sumOf(bestSectors), 'best of each sector across the laps');
+  assert.equal(lap3.summary.corners[0].bestMinSpeedKmh, lap2.summary.corners[0].minSpeedKmh);
   near(lap3.summary.corners[0].minSpeedKmh, 50 * 1.02 * 3.6, 1.5);
   assert.ok(lap3.summary.corners[0].minSpeedKmh > lap1.summary.corners[0].minSpeedKmh);
 });
@@ -328,6 +334,49 @@ check('clamping and the two-sample minimum', () => {
 });
 
 // ---- Validation --------------------------------------------------------------------------------
+
+console.log('Penalty rules: no whole-lap invalidation');
+check('autopilot lap: +30 s once, still counts, ghost plays raw samples', () => {
+  const r = makeRecorder();
+  const ap = (lapCount: number, currentLapTimeMs: number, lastLapTimeMs: number | null): LapRecorderInput => ({
+    telemetry: { ...tele(lapCount, currentLapTimeMs, lastLapTimeMs).telemetry, aiAutopilot: true },
+    position: { x: 0, y: 0, z: 0 },
+    quaternion: { x: 0, y: 0, z: 0, w: 1 },
+  });
+  r.update(ap(0, 0, null));
+  r.update(ap(0, 1000, null));
+  const done = r.update(tele(1, 5, 60_000));
+  assert.ok(done, 'autopilot lap is returned');
+  assert.equal(done!.summary.valid, true);
+  assert.equal(done!.summary.autopilotPenaltyMs, 30_000);
+  assert.equal(done!.summary.lapTimeMs, 90_000);
+  assert.equal(done!.summary.rawLapTimeMs, 60_000);
+  const ghost = new GhostPlayer(done!.recording);
+  assert.equal(ghost.rawLapTimeS, 60);
+  assert.equal(ghost.lapTimeS, 90);
+});
+check('flashback lap: free, counts at raw time, event recorded, validation passes', () => {
+  const r = makeRecorder();
+  r.update(tele(0, 0, null));
+  r.noteFlashback({ t: 10, sBefore: 1000, sAfter: 500, speedKmh: 100 });
+  const done = r.update(tele(1, 5, 60_000));
+  assert.ok(done, 'flashback lap is returned');
+  assert.equal(done!.summary.valid, true);
+  assert.equal(done!.summary.flashbackCount, 1);
+  assert.equal(done!.summary.lapTimeMs, 60_000);
+  assert.equal(done!.recording.flashbacks?.length, 1);
+  assert.ok(validateLapRecording(done!.recording), 'flashback recording validates');
+});
+check('lap ending while an excursion is still judged: +3 s, not invalid', () => {
+  const r = makeRecorder();
+  r.update(tele(0, 0, null));
+  const crossing = tele(1, 5, 60_000);
+  const done = r.update({ ...crossing, telemetry: { ...crossing.telemetry, lastLapValid: false } });
+  assert.ok(done, 'pending-judgement lap is returned');
+  assert.equal(done!.summary.valid, true);
+  assert.equal(done!.summary.trackLimitsPenaltyMs, 3000);
+  assert.equal(done!.summary.lapTimeMs, 63_000);
+});
 
 console.log('Recording validation');
 const json = JSON.parse(JSON.stringify(lap1.recording)) as unknown;

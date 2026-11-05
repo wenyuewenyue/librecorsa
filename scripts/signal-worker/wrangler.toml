@@ -1,0 +1,17 @@
+name = "librecorsa-signal"
+main = "worker.ts"
+compatibility_date = "2025-01-01"
+
+# One Durable Object instance per room code (see worker.ts). No KV.
+# TURN secrets are NOT in this file: set them with
+#   wrangler secret put TURN_KEY_ID
+#   wrangler secret put TURN_API_TOKEN
+# While they are unset, GET /turn returns 503 and the game falls back
+# to its static TURN servers.
+[[durable_objects.bindings]]
+name = "SIGNAL_ROOM"
+class_name = "SignalRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SignalRoom"]

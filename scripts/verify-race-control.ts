@@ -127,12 +127,14 @@ console.log("Track limits · warnings and penalties");
   strike();
   const third = strike();
   check("second penalty is +5 s", third[0]?.kind === "penalty" && third[0].penaltyS === 5 && m.penaltyTotalS === 8);
-  check("race control banner text", m.snapshot(clock * 1000).message?.text === "+5.0s time penalty", m.snapshot(clock * 1000).message?.text);
+  check("race control banner text", m.snapshot(clock * 1000).message?.text === "+5.0秒罚时", m.snapshot(clock * 1000).message?.text);
 
   const p = new TrackLimitsMonitor();
   p.reset("practice");
   const pe = [...wide(p, 0.6, 0, -0.3), ...drive(p, 6.5, { deltaS: -0.3 })];
-  check("practice: a strike deletes the lap", pe.length === 1 && pe[0].kind === "lap_invalid" && p.penaltyTotalS === 0);
+  check("practice: a strike adds +3 s, lap stays valid", pe.length === 1 && pe[0].kind === "penalty" && pe[0].penaltyS === 3 && p.penaltyTotalS === 3 && p.practiceLapPenaltyS === 3);
+  const pe2 = [...wide(p, 0.6, 0, -0.3), ...drive(p, 6.5, { deltaS: -0.3 })];
+  check("practice: strikes accumulate +3 s each", pe2.length === 1 && pe2[0].kind === "penalty" && p.practiceLapPenaltyS === 6);
 
   const q = new TrackLimitsMonitor();
   q.reset("race");

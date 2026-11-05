@@ -6,8 +6,8 @@ compatibility_date = "2025-01-01"
 # then replace the placeholder id below with the id it prints.
 [[kv_namespaces]]
 binding = "LAPS"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "ec944cc0881541bf9fede6e68e545d61"
 
 [vars]
-# Origin allowed to call the board, e.g. "https://your-sim.example"; "*" allows any site
-ALLOWED_ORIGIN = "*"
+# Origins allowed to call the board, comma-separated; "*" allows any site
+ALLOWED_ORIGIN = "https://librecorsa.pages.dev,https://wysaiche.2221314.xyz"
