@@ -107,10 +107,10 @@ const clock = (h: number) => {
 
 /** Track wetness as a word, from the water on the racing line */
 export function trackStateLabel(waterMm: number): string {
-  if (waterMm < 0.03) return "Dry";
-  if (waterMm < 0.14) return "Damp";
-  if (waterMm < 1.1) return "Wet";
-  return "Flooded";
+  if (waterMm < 0.03) return "干燥";
+  if (waterMm < 0.14) return "潮湿";
+  if (waterMm < 1.1) return "湿滑";
+  return "积水";
 }
 
 /** Weather, time of day, time multiplier and simulation realism */
@@ -130,9 +130,9 @@ export const ConditionsPanel: React.FC<ConditionsPanelProps> = ({
       <div className="flex min-w-0 flex-col gap-4">
         <div className={CARD}>
           <CardHeader
-            label="Weather"
+            label="天气"
             color="#00E5FF"
-            right={locked ? <span className="lc-lbl text-[9px] text-[#00E5FF]">Set by the host</span> : null}
+            right={locked ? <span className="lc-lbl text-[9px] text-[#00E5FF]">由房主设定</span> : null}
           />
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             {WEATHER_PRESETS.map((id) => (
@@ -148,7 +148,7 @@ export const ConditionsPanel: React.FC<ConditionsPanelProps> = ({
             ))}
           </div>
           <div className="flex flex-col gap-1.5 pt-1">
-            <span className="lc-lbl text-[9px]">5-node session forecast</span>
+            <span className="lc-lbl text-[9px]">5 节点本场预报</span>
             <div className="grid grid-cols-5 gap-1.5">
               {(conditions.weatherNodes ?? defaultWeatherNodesForPreset(conditions.weather, conditions.timeOfDay, conditions.seed)).map((node, idx) => {
                 const sky = SKY_COVER_SPECS[node.sky];
@@ -160,7 +160,7 @@ export const ConditionsPanel: React.FC<ConditionsPanelProps> = ({
                     <span className="lc-lbl text-[8px] text-[#8E96AA]">{WEATHER_NODE_LABELS[idx]}</span>
                     <span className="truncate text-[11px] font-bold text-[#F5F7FA]">{sky.label}</span>
                     <span className="font-f1-mono text-[10px] text-[#00E5FF]">
-                      {node.rainChance > 0 ? `${Math.round(node.rainChance)}% rain` : `${node.temperatureC.toFixed(0)}°C`}
+                      {node.rainChance > 0 ? `${Math.round(node.rainChance)}% 降雨` : `${node.temperatureC.toFixed(0)}°C`}
                     </span>
                   </div>
                 );
@@ -170,7 +170,7 @@ export const ConditionsPanel: React.FC<ConditionsPanelProps> = ({
         </div>
 
         <div className={CARD}>
-          <CardHeader label="Time of day" color="#FFB300" />
+          <CardHeader label="时段" color="#FFB300" />
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
             {TIME_OF_DAY_PRESETS.map((id) => (
               <ChoiceCard
@@ -184,12 +184,12 @@ export const ConditionsPanel: React.FC<ConditionsPanelProps> = ({
             ))}
           </div>
           <div className="flex flex-col gap-2">
-            <span className="lc-lbl text-[9px]">Time progression</span>
+            <span className="lc-lbl text-[9px]">时间推进</span>
             <Segmented
-              label="Time progression"
+              label="时间推进"
               value={String(conditions.timeScale)}
               onChange={(v) => !locked && set({ timeScale: Number(v) })}
-              options={TIME_SCALES.map((s) => ({ id: String(s), label: s === 0 ? "Fixed" : `${s}×`, disabled: locked }))}
+              options={TIME_SCALES.map((s) => ({ id: String(s), label: s === 0 ? "固定" : `${s}×`, disabled: locked }))}
             />
           </div>
         </div>
@@ -197,9 +197,9 @@ export const ConditionsPanel: React.FC<ConditionsPanelProps> = ({
 
       <div className="flex min-w-0 flex-col gap-4">
         <div className={CARD}>
-          <CardHeader label="Track surface rubber" color="#3CCB4A" />
+          <CardHeader label="赛道表面橡胶" color="#3CCB4A" />
           <Segmented
-            label="Track surface rubber"
+            label="赛道表面橡胶"
             value={conditions.surfacePreset ?? "natural"}
             onChange={(v) => !locked && set({ surfacePreset: v as SurfaceGripPresetId })}
             options={SURFACE_GRIP_PRESETS.map((id) => ({
@@ -212,14 +212,14 @@ export const ConditionsPanel: React.FC<ConditionsPanelProps> = ({
             {SURFACE_GRIP_PRESET_LABELS[conditions.surfacePreset ?? "natural"].detail}
           </p>
           <div className="flex flex-col gap-2">
-            <span className="lc-lbl text-[9px]">Surface evolution rate</span>
+            <span className="lc-lbl text-[9px]">表面演变速率</span>
             <Segmented
-              label="Surface evolution rate"
+              label="表面演变速率"
               value={String(conditions.surfaceTimeScale ?? 1)}
               onChange={(v) => !locked && set({ surfaceTimeScale: Number(v) })}
               options={SURFACE_TIME_SCALES.map((s) => ({
                 id: String(s),
-                label: s === 0 ? "Static" : `${s}×`,
+                label: s === 0 ? "静态" : `${s}×`,
                 disabled: locked,
               }))}
             />
@@ -227,9 +227,9 @@ export const ConditionsPanel: React.FC<ConditionsPanelProps> = ({
         </div>
 
         <div className={CARD}>
-          <CardHeader label="Simulation realism" color="#CCFF00" />
+          <CardHeader label="模拟真实度" color="#CCFF00" />
           <Segmented
-            label="Simulation realism"
+            label="模拟真实度"
             value={realism}
             onChange={onChangeRealism}
             options={SIM_REALISM_LEVELS.map((id) => ({ id, label: SIM_REALISM_LABELS[id].label }))}
@@ -239,13 +239,13 @@ export const ConditionsPanel: React.FC<ConditionsPanelProps> = ({
 
         {readout ? (
           <div className={CARD}>
-            <CardHeader label="Now on track" color="#3CCB4A" />
+            <CardHeader label="赛道实况" color="#3CCB4A" />
             <dl className="m-0 grid grid-cols-2 gap-x-4 gap-y-2.5 sm:grid-cols-4">
               {[
-                ["Clock", clock(readout.clockH)],
-                ["Air", `${readout.airC.toFixed(0)} °C`],
-                ["Track", `${readout.trackC.toFixed(0)} °C`],
-                ["Surface", `${trackStateLabel(readout.waterMm)}${readout.rain > 0.05 ? " · rain" : ""}`],
+                ["时间", clock(readout.clockH)],
+                ["气温", `${readout.airC.toFixed(0)} °C`],
+                ["赛道温度", `${readout.trackC.toFixed(0)} °C`],
+                ["路面", `${trackStateLabel(readout.waterMm)}${readout.rain > 0.05 ? " · 下雨" : ""}`],
               ].map(([k, v]) => (
                 <div key={k} className="flex min-w-0 flex-col gap-1">
                   <dt className="lc-lbl text-[9px]">{k}</dt>
@@ -257,8 +257,7 @@ export const ConditionsPanel: React.FC<ConditionsPanelProps> = ({
         ) : null}
 
         <p className="m-0 px-1 text-[12px] leading-normal text-[#8E96AA]">
-          Rain needs rain tyres: intermediates on a wet track, full wets in standing water. The cars dry a line as the
-          rain stops. AI opponents choose their own tyres.
+          下雨需要雨胎：湿滑赛道用中性雨胎，积水用全雨胎。雨停后赛车会逐渐跑出一条干线。AI 对手会自行选择轮胎。
         </p>
       </div>
     </div>

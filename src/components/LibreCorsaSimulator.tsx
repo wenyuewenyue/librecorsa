@@ -46,13 +46,16 @@ import {
 } from "@/lib/sim/multiplayer-sync";
 import { MultiplayerRace } from "@/lib/sim/race-session";
 import { GhostPlayer, LapRecorder } from "@/lib/sim/lap-recorder";
+import { BUFF_PACK, NO_BUFF } from "@/lib/sim/buff-pack";
 import { ReplayBuffer } from "@/lib/sim/replay-buffer";
 import type { LapRecording, LapSummaryData, LeaderboardEntry, ReplayCarState } from "@/lib/sim/lap-types";
 import { exportLapFile, importLapFile, loadBestLap, saveBestLapIfFaster } from "@/lib/sim/ghost-store";
 import {
+  deleteRemoteLap,
   fetchRemoteGhost,
   fetchRemoteLeaderboard,
   localLeaderboard,
+  remoteDeleteSupported,
   remoteLeaderboardEnabled,
   submitLap,
 } from "@/lib/net/leaderboard";
@@ -81,9 +84,23 @@ import { ReplayBar } from "@/components/hud/ReplayBar";
 import { F1TelemetryHud, roomFromUrl } from "@/components/F1TelemetryHud";
 import { CAMERA_LABELS, nextCameraMode, TYRE_SETUP_LIMITS } from "@/components/hud/PauseMenu";
 import { LoadingScreen } from "@/components/menu/LoadingScreen";
+import { GraphicsBenchmarkOverlay, type BenchmarkUiState } from "@/components/GraphicsBenchmarkOverlay";
+import {
+  BENCHMARK_CONFIRM_MS,
+  BENCHMARK_MEASURE_MS,
+  BENCHMARK_WARMUP_MS,
+  buildTestResult,
+  checkWebGL2,
+  isMobileBenchmarkDevice,
+  mapBenchmarkToGraphics,
+  startQualityForDevice,
+  stepDownQuality,
+  summarizeSamples,
+} from "@/lib/graphics-benchmark";
 import { TitleMenu } from "@/components/menu/TitleMenu";
 import { FirstRunWizard, type WizardMode, type WizardStepId } from "@/components/menu/FirstRunWizard";
 import { assetProgress } from "@/lib/loading/asset-progress";
+import { pauseResourcePreload, startResourcePreload } from "@/lib/loading/resource-preloader";
 import { buildKeyLookup, HUD_TOGGLE_EVENT, keyLabel, padButtonLabel, type KeyAction } from "@/lib/input/bindings";
 import { carWheelLockDeg, connectedPads, DeviceInputReader } from "@/lib/input/device-input";
 import { webHidFfb, wheelFfb } from "@/lib/input/wheel-ffb";
@@ -145,6 +162,38 @@ type AppPhase = "loading" | "title" | "wizard" | "driving";
 
 /** Key actions that act while held (the rest are one-shot toggles) */
 const HELD_KEY_ACTIONS: ReadonlySet<KeyAction> = new Set(["throttle", "brake", "steerLeft", "steerRight", "boostHold", "throttleHalf"]);
+
+/**
+ * Single keys whose browser default must never reach the page while driving:
+ * Space/Arrows scroll, Backspace goes back, Tab moves focus, Slash opens
+ * quick-find (Firefox), Brackets/Insert/Delete/Home/End/PageUp/PageDown all
+ * have page or caret defaults. Game-bound keys are added by the handler itself.
+ * This list deliberately excludes Enter (dialog buttons stay keyboard-usable)
+ * and Escape (pause, handled separately). Browser/OS-reserved combos
+ * (Ctrl+T/W/N, Alt+Tab, Alt+F4, Meta+*) are NOT in this list: the page may
+ * never even receive them, and preventDefault cannot stop them.
+ */
+const BROWSER_DEFAULT_KEYS: ReadonlySet<string> = new Set([
+  "Space",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "Backspace",
+  "Tab",
+  "Slash",
+  "BracketLeft",
+  "BracketRight",
+  "Insert",
+  "Delete",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+]);
+
+/** F1–F12: attempted, not guaranteed (F11/F12 are usually browser-reserved). */
+const isFunctionKey = (code: string): boolean => /^F([1-9]|1[0-2])$/.test(code);
 
 /** Rear slip ratio where the keyboard exit assist starts to hold the throttle back */
 const KB_EXIT_ASSIST_SLIP = 0.1;
@@ -268,9 +317,11 @@ export interface LibreCorsaSimulatorProps {
   trackId?: string;
   /** Title menu circuit picker */
   onSelectTrack?: (id: string) => void;
+  /** Fires once when this mount's assets are ready (used by the gate to lift its switching overlay) */
+  onAssetsReady?: () => void;
 }
 
-export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackId = "rwanda", onSelectTrack }) => {
+export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackId = "rwanda", onSelectTrack, onAssetsReady }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   const track = useMemo(() => getRwandaTrackData(1200), []);
@@ -385,7 +436,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     roomCode: "",
     state: "idle",
     connectedWebRtcPeers: 0,
-    statusText: "BroadcastChannel Active (Same-Browser) • Ready for WebRTC P2P",
+    statusText: "BroadcastChannel 已激活（同浏览器）· WebRTC 点对点已就绪",
   });
 
   // ---- Multiplayer lobby and races
@@ -397,12 +448,33 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
   /** The results card was closed for this race */
   const [resultsClosed, setResultsClosed] = useState(false);
 
+  // ---- Activation-code buff pack (one run only, never stored in settings)
+  const [buffActive, setBuffActive] = useState(false);
+  const buffActiveRef = useRef(false);
+  const activateBuff = useCallback(() => {
+    buffActiveRef.current = true;
+    setBuffActive(true);
+  }, []);
+  const clearBuff = useCallback(() => {
+    buffActiveRef.current = false;
+    setBuffActive(false);
+  }, []);
+  /** Wall-return watch: armed once the car has been fast, fires after 2.5 s stuck slow */
+  const wallReturnRef = useRef<{ seenFast: boolean; stuckSinceMs: number | null; lastReturnMs: number }>({ seenFast: false, stuckSinceMs: null, lastReturnMs: 0 });
+
   // ---- Laps, ghosts, leaderboards
   const lapRecorderRef = useRef<LapRecorder | null>(null);
   const [lapSummary, setLapSummary] = useState<{ summary: LapSummaryData; recording: LapRecording } | null>(null);
   const [submitState, setSubmitState] = useState<"idle" | "sending" | "sent" | "error">("idle");
   const [submitRank, setSubmitRank] = useState<number | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // Uploading the saved local best from the leaderboard panel (separate from
+  // the post-lap summary card's submit, which uploads the lap just driven)
+  const [uploadBestState, setUploadBestState] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [uploadBestRank, setUploadBestRank] = useState<number | null>(null);
+  const [uploadBestError, setUploadBestError] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [driverKeyNotice, setDriverKeyNotice] = useState<string | null>(null);
   /** Ghost being raced: the personal best (default) or a downloaded / imported lap */
   const ghostRef = useRef<GhostPlayer | null>(null);
@@ -687,6 +759,10 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     multiplayerRef.current?.joinRoom(roomCode);
   }, []);
 
+  const handleCancelJoinP2PRoom = useCallback(() => {
+    multiplayerRef.current?.cancelJoin();
+  }, []);
+
   const handleCreateManualOffer = useCallback(async () => {
     if (!multiplayerRef.current) return "";
     return multiplayerRef.current.createManualOffer();
@@ -802,6 +878,9 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     (race: boolean) => {
       const physics = physicsRef.current;
       if (physics) {
+        // The car was built at title time, before the code could be entered: apply the
+        // buff for this run here, and again in createCar for any mid-run car swap
+        (physics as unknown as { buff: typeof NO_BUFF }).buff = buffActiveRef.current ? BUFF_PACK : NO_BUFF;
         physics.aiAutopilot = false;
         if (race) {
           if (!aiFieldRef.current) aiFieldRef.current = new AiOpponentField(track, physics, AI_DRIVERS, getTrackEnv(), { skill: settingsRef.current.aiSkill });
@@ -813,6 +892,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       }
       setAiOpponents(race);
       setResultsClosed(false);
+      wallReturnRef.current = { seenFast: false, stuckSinceMs: null, lastReturnMs: 0 };
       lapRecorderRef.current?.reset();
       kbInputRef.current.throttle = 0;
       kbInputRef.current.brake = 0;
@@ -821,6 +901,12 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       setPaused(false);
       audioRef.current?.setPaused(false);
       setLaunchHint(true);
+      // Drop focus from the menu button just clicked (e.g. "开始"): without
+      // this, Space (boost) would re-activate that button instead of boosting.
+      // The keydown shield above is the backstop for buttons focused later.
+      if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
       setPhase("driving");
     },
     [track, getTrackEnv, setPhase]
@@ -843,6 +929,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       getTrackEnv().reset();
       setAiOpponents(false);
       if (physics) {
+        (physics as unknown as { buff: typeof NO_BUFF }).buff = buffActiveRef.current ? BUFF_PACK : NO_BUFF;
         physics.aiAutopilot = false;
         physics.resetToStartGrid(false, race.gridSlot);
         race.lapClock.reset(physics.sMeters);
@@ -857,6 +944,9 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       audioRef.current?.setPaused(false);
       setResultsClosed(false);
       setMpRaceRunning(true);
+      if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
       setPhase("driving");
     },
     [track, getTrackEnv, setPhase, vehiclesForClass, handleChangeCar]
@@ -971,20 +1061,57 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
   const handleExportDriverKey = useCallback(() => {
     setDriverKeyNotice(
       exportDriverKeyFile(settingsRef.current.profile.name)
-        ? "Key saved. Anyone with the file can post as you."
-        : "No key yet: your first upload creates it."
+        ? "密钥已保存。持有该文件的人可以以你的身份发布。"
+        : "暂无密钥：首次上传将创建密钥。"
     );
   }, []);
 
   const handleImportDriverKey = useCallback(async (file: File) => {
     const res = await importDriverKeyFile(file);
-    setDriverKeyNotice(res.ok ? `Key imported${res.name ? ` for ${res.name}` : ""}. Uploads from here use it.` : res.error);
+    setDriverKeyNotice(res.ok ? `密钥已导入${res.name ? `（${res.name}）` : ""}。此后的上传将使用它。` : res.error);
   }, []);
 
   const handleExportBest = useCallback(async () => {
     const rec = await loadBestLap(trackId, vehicleModelRef.current).catch(() => null);
     if (rec) exportLapFile(rec);
   }, [trackId]);
+
+  /** Uploads the saved local best for this track and car to the online board, under the current driver name */
+  const handleUploadBest = useCallback(async () => {
+    if (!remoteLeaderboardEnabled) return;
+    const saved = await loadBestLap(trackId, vehicleModelRef.current).catch(() => null);
+    if (!saved) {
+      setUploadBestState("error");
+      setUploadBestError("本地没有可上传的成绩");
+      return;
+    }
+    const profile = settingsRef.current.profile;
+    const rec = { ...saved, driverName: profile.name, driverCode: profile.code };
+    setUploadBestState("sending");
+    setUploadBestError(null);
+    const res = await submitLap(rec).catch((): { ok: boolean; rank?: number; error?: string } => ({ ok: false }));
+    setUploadBestState(res.ok ? "sent" : "error");
+    setUploadBestRank(res.ok ? (res.rank ?? null) : null);
+    setUploadBestError(res.ok ? null : (res.error ?? null));
+    if (res.ok) void refreshLeaderboard();
+  }, [trackId, refreshLeaderboard]);
+
+  /** Deletes one online row; the local best is untouched, so it can be re-uploaded */
+  const handleDeleteRemote = useCallback(
+    async (entry: LeaderboardEntry) => {
+      if (!entry.id) return;
+      setDeletingId(entry.id);
+      setDeleteError(null);
+      const res = await deleteRemoteLap(entry.id).catch((): { ok: boolean; error?: string } => ({ ok: false }));
+      setDeletingId(null);
+      if (!res.ok) {
+        setDeleteError(res.error ?? "删除失败");
+        return;
+      }
+      void refreshLeaderboard();
+    },
+    [refreshLeaderboard],
+  );
 
   // ---- Instant replay transport
   const handleReplayTogglePlay = useCallback(() => {
@@ -1082,9 +1209,240 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     pausedRef.current = false;
     setPaused(false);
     audioRef.current?.setPaused(true);
+    // A buff run ends at the title menu: the next run needs the code again
+    clearBuff();
+    wallReturnRef.current = { seenFast: false, stuckSinceMs: null, lastReturnMs: 0 };
     setPhase("title");
-  }, [setPhase]);
+  }, [clearBuff, setPhase]);
   exitToTitleRef.current = exitToTitle;
+
+  // ---- Automatic graphics-quality test -------------------------------------
+  // The test runs a real AI race with autopilot (startDriving(true)) in
+  // daylight/clear weather, camera chase, on the already-loaded track, and
+  // samples real frame intervals with its own rAF loop while the simulator
+  // renders. It never starts while a race is running, never submits a lap
+  // (the run is far shorter than one lap), and restores the player's
+  // conditions afterwards. Manual graphics changes are never overwritten
+  // except when the player presses "自动检测画质" or accepts the first-run test.
+  const [benchmarkUi, setBenchmarkUi] = useState<BenchmarkUiState | null>(null);
+  const [benchmarkRunning, setBenchmarkRunning] = useState(false);
+  // Synchronous guard: React state updates are async, so a fast double-click
+  // could otherwise start two benchmarks before the button disables.
+  const benchmarkActiveRef = useRef(false);
+  const benchmarkCancelRef = useRef(false);
+  const benchmarkPromptShownRef = useRef(false);
+  const benchmarkOriginalRef = useRef<{
+    graphics: PlayerSettings["graphics"];
+    conditions: SessionConditions;
+    camera: CameraMode;
+  } | null>(null);
+
+  const cancelBenchmark = useCallback(() => {
+    benchmarkCancelRef.current = true;
+  }, []);
+
+  const sampleFrames = useCallback(
+    (durationMs: number, label: string): Promise<number[]> => {
+      return new Promise((resolve, reject) => {
+        const samples: number[] = [];
+        const start = performance.now();
+        let last = start;
+        let lastUiUpdate = 0;
+        const step = (now: number) => {
+          if (benchmarkCancelRef.current) {
+            reject(new Error("cancelled"));
+            return;
+          }
+          if (phaseRef.current !== "driving") {
+            reject(new Error("left-driving"));
+            return;
+          }
+          const interval = now - last;
+          last = now;
+          if (interval > 0 && interval <= 250) samples.push(interval);
+          const elapsed = now - start;
+          // Throttle UI updates to ~4/s: updating React state every frame
+          // would itself cost frames and distort the measurement.
+          if (elapsed - lastUiUpdate >= 250 || elapsed >= durationMs) {
+            lastUiUpdate = elapsed;
+            setBenchmarkUi((prev) =>
+              prev && prev.stage === "running"
+                ? { ...prev, runningLabel: label, progress: Math.min(1, elapsed / durationMs) }
+                : prev,
+            );
+          }
+          if (elapsed >= durationMs) resolve(samples);
+          else requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+      });
+    },
+    [phaseRef],
+  );
+
+  const delayCancellable = useCallback((ms: number, label: string) => {
+    return new Promise<void>((resolve, reject) => {
+      const start = performance.now();
+      const tick = () => {
+        if (benchmarkCancelRef.current) {
+          reject(new Error("cancelled"));
+          return;
+        }
+        if (phaseRef.current !== "driving") {
+          reject(new Error("left-driving"));
+          return;
+        }
+        const elapsed = performance.now() - start;
+        setBenchmarkUi((prev) =>
+          prev && prev.stage === "running" ? { ...prev, runningLabel: label, progress: Math.min(1, elapsed / ms) } : prev,
+        );
+        if (elapsed >= ms) resolve();
+        else window.setTimeout(tick, 200);
+      };
+      tick();
+    });
+  }, [phaseRef]);
+
+  const finishBenchmark = useCallback(
+    async (source: "auto" | "manual") => {
+      if (phaseRef.current !== "title" || benchmarkRunning || benchmarkActiveRef.current || !assetsReady) return;
+      benchmarkActiveRef.current = true;
+      if (!checkWebGL2()) {
+        benchmarkActiveRef.current = false;
+        setBenchmarkUi({
+          stage: "failed",
+          runningLabel: "",
+          progress: 0,
+          result: null,
+          message: "未能创建 WebGL2 上下文，已应用低画质。",
+        });
+        handleChangeSettings((prev) => ({ ...prev, graphics: { quality: "low", renderScale: 0.6 } }));
+        return;
+      }
+      benchmarkCancelRef.current = false;
+      setBenchmarkRunning(true);
+      const deviceIsMobile = isMobileBenchmarkDevice();
+      const startQuality = startQualityForDevice(deviceIsMobile);
+      const originalGraphics = settingsRef.current.graphics;
+      const originalConditions = settingsRef.current.conditions;
+      benchmarkOriginalRef.current = { graphics: originalGraphics, conditions: originalConditions, camera: cameraModeRef.current };
+      setBenchmarkUi({ stage: "running", runningLabel: "热身中", progress: 0, result: null, message: null });
+      try {
+        // Temporary test conditions only; restored before returning to the menu.
+        handleChangeConditions({ ...originalConditions, weather: "clear", timeOfDay: "noon", timeScale: 0 });
+        handleChangeSettings((prev) => ({ ...prev, graphics: { quality: startQuality, renderScale: 1 } }));
+        setCameraMode("chase");
+        startDriving(true);
+        const physics = physicsRef.current;
+        if (physics) {
+          physics.aiAutopilot = true;
+          if (physics.vxMs < 5) physics.vxMs = 45;
+        }
+        await delayCancellable(BENCHMARK_WARMUP_MS, "热身中");
+        const samples = await sampleFrames(BENCHMARK_MEASURE_MS, "正式测试中");
+        const summary = summarizeSamples(samples);
+        let finalGraphics = mapBenchmarkToGraphics(summary.avgFps, summary.p1Fps, summary.stutterRatio);
+        let confirmNote: string | null = null;
+        // Step down briefly and confirm the chosen level is actually playable.
+        if (finalGraphics.quality !== startQuality) {
+          handleChangeSettings((prev) => ({ ...prev, graphics: finalGraphics }));
+          const confirmSamples = await sampleFrames(BENCHMARK_CONFIRM_MS, "确认中");
+          const confirm = summarizeSamples(confirmSamples);
+          if (confirm.avgFps < 20) {
+            const lower = stepDownQuality(finalGraphics.quality);
+            if (lower) {
+              finalGraphics = mapBenchmarkToGraphics(0, 0, 1);
+              finalGraphics = { quality: lower, renderScale: lower === "low" ? 0.6 : 0.85 };
+              confirmNote = "确认时仍偏卡，已再降一档。";
+            }
+          }
+        }
+        const result = buildTestResult(summary, deviceIsMobile, source);
+        result.quality = finalGraphics.quality;
+        result.renderScale = finalGraphics.renderScale;
+        handleChangeSettings((prev) => ({
+          ...prev,
+          graphics: finalGraphics,
+          graphicsTest: result,
+          graphicsTestDismissed: true,
+        }));
+        handleChangeConditions(originalConditions);
+        if (benchmarkOriginalRef.current) setCameraMode(benchmarkOriginalRef.current.camera);
+        if (physicsRef.current) physicsRef.current.aiAutopilot = false;
+        exitToTitle();
+        setBenchmarkUi({
+          stage: "result",
+          runningLabel: "",
+          progress: 1,
+          result,
+          message: confirmNote,
+        });
+      } catch (err) {
+        const cancelled = err instanceof Error && (err.message === "cancelled" || err.message === "left-driving");
+        const original = benchmarkOriginalRef.current;
+        if (original) {
+          handleChangeSettings((prev) => ({ ...prev, graphics: original.graphics }));
+          handleChangeConditions(original.conditions);
+          setCameraMode(original.camera);
+        }
+        if (physicsRef.current) physicsRef.current.aiAutopilot = false;
+        // phaseRef is a mutable ref: re-read it as a plain string here, since
+        // TypeScript otherwise narrows it from the earlier title check above.
+        if ((phaseRef.current as string) === "driving") exitToTitle();
+        if (cancelled) {
+          setBenchmarkUi(null);
+        } else {
+          setBenchmarkUi({
+            stage: "failed",
+            runningLabel: "",
+            progress: 0,
+            result: null,
+            message: "检测过程中出现问题，已恢复原画质设置。可在设置中再次执行自动检测。",
+          });
+        }
+      } finally {
+        setBenchmarkRunning(false);
+        benchmarkActiveRef.current = false;
+        benchmarkOriginalRef.current = null;
+      }
+    },
+    [assetsReady, benchmarkRunning, exitToTitle, handleChangeConditions, handleChangeSettings, sampleFrames, delayCancellable, phaseRef, settingsRef, startDriving],
+  );
+
+  const skipBenchmarkPrompt = useCallback(() => {
+    setBenchmarkUi(null);
+    handleChangeSettings((prev) => ({ ...prev, graphicsTestDismissed: true }));
+  }, [handleChangeSettings]);
+
+  // Background resource preloader: once the title menu is up and the current
+  // circuit is ready, warm the other circuits and cars in the menu only.
+  // Driving aborts any fetch in flight; returning to the title resumes it.
+  useEffect(() => {
+    if (phase !== "title" || !assetsReady || loadingVisible) {
+      if (phase === "driving") pauseResourcePreload();
+      return;
+    }
+    void startResourcePreload(trackId, () => phaseRef.current === "driving");
+  }, [phase, assetsReady, loadingVisible, trackId]);
+
+  // Tell the gate this mount's assets are ready, so a track-switch overlay
+  // can lift only once the new scene is actually built and compiled, not
+  // at the instant the remount starts (which left a frozen new mount with
+  // no cover). The loading screen itself still needs the player's key
+  // press after this point, so the overlay lifting here does not skip it.
+  useEffect(() => {
+    if (assetsReady) onAssetsReady?.();
+  }, [assetsReady, onAssetsReady]);
+
+  // First-run prompt: once, after the title menu is visible, and only when
+  // no test result exists and the prompt was never skipped.
+  useEffect(() => {
+    if (!settingsHydrated || phase !== "title" || !assetsReady || loadingVisible) return;
+    if (settings.graphicsTest || settings.graphicsTestDismissed) return;
+    if (benchmarkPromptShownRef.current || benchmarkUi) return;
+    benchmarkPromptShownRef.current = true;
+    setBenchmarkUi({ stage: "prompt", runningLabel: "", progress: 0, result: null, message: null });
+  }, [settingsHydrated, phase, assetsReady, loadingVisible, settings.graphicsTest, settings.graphicsTestDismissed, benchmarkUi]);
 
   /** "Press any key" on the loading screen: the user gesture that unlocks audio */
   const handleLoadingStart = useCallback(() => {
@@ -1146,6 +1504,9 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       car.aiAutopilot = false;
       car.assistPreset = prev?.assistPreset ?? DEFAULT_ASSIST_PRESET;
       car.aeroPreset = prev?.aeroPreset ?? DEFAULT_AERO_PRESET;
+      // Activation-code buff: applied to every car the player drives this run, including
+      // a mid-run car swap; without a buff the multipliers are all 1, so nothing changes
+      (car as unknown as { buff: typeof NO_BUFF }).buff = buffActiveRef.current ? BUFF_PACK : NO_BUFF;
       if (prev) {
         car.gamepadAssistEnabled = prev.gamepadAssistEnabled;
         car.tireCompound = prev.tireCompound;
@@ -1364,7 +1725,8 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     const onKeyDown = (e: KeyboardEvent) => {
       if (
         e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement
+        e.target instanceof HTMLTextAreaElement ||
+        (e.target instanceof HTMLElement && e.target.isContentEditable)
       ) {
         return;
       }
@@ -1378,7 +1740,31 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
         togglePauseRef.current();
         return;
       }
+      // Pause menu keeps its own keyboard navigation (Tab, Space/Enter on
+      // buttons): do not shield while paused, or the menu becomes unusable.
       if (pausedRef.current) return;
+
+      // Browser-shortcut shield (driving only, unpaused). Game bindings are
+      // NOT changed here: this only stops the browser's default for the same
+      // key, then processing continues below so the game still sees it.
+      // Slash is deliberately not returned early: preventDefault stops the
+      // browser quick-find, and the /boost buffer below still receives it.
+      // Brackets likewise continue to the FOV adjustment below.
+      const bound = keyLookupRef.current.has(code);
+      const modifierCombo = e.ctrlKey || e.metaKey || e.altKey;
+      if (bound || BROWSER_DEFAULT_KEYS.has(code) || isFunctionKey(code) || modifierCombo) {
+        e.preventDefault();
+      }
+      if (
+        !bound &&
+        code !== "Slash" &&
+        (code === "Tab" ||
+          modifierCombo ||
+          (isFunctionKey(code) && code !== "F11" && code !== "F12") ||
+          (BROWSER_DEFAULT_KEYS.has(code) && code !== "BracketLeft" && code !== "BracketRight"))
+      ) {
+        return;
+      }
 
       // [ / ] narrow / widen the onboard FOV live, unless the player bound those keys to a control
       if ((code === "BracketLeft" || code === "BracketRight") && !keyLookupRef.current.has(code)) {
@@ -1484,6 +1870,9 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
         case "mfdPage":
           window.dispatchEvent(new Event(HUD_TOGGLE_EVENT.mfdPage));
           break;
+        case "keysOverlay":
+          window.dispatchEvent(new Event(HUD_TOGGLE_EVENT.keysOverlay));
+          break;
       }
     };
 
@@ -1500,9 +1889,26 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     const onKeyUp = (e: KeyboardEvent) => {
       if (
         e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement
+        e.target instanceof HTMLTextAreaElement ||
+        (e.target instanceof HTMLElement && e.target.isContentEditable)
       ) {
         return;
+      }
+      // Same shield as keydown, on release: Space button activation happens
+      // on keyup, so blocking only keydown would still let a focused button
+      // (e.g. a HUD button clicked with the mouse) re-fire on Space release.
+      // Paused menus are exempt, as on keydown, so their buttons stay usable.
+      if (
+        phaseRef.current === "driving" &&
+        !pausedRef.current &&
+        (keyLookupRef.current.has(e.code) ||
+          BROWSER_DEFAULT_KEYS.has(e.code) ||
+          isFunctionKey(e.code) ||
+          e.ctrlKey ||
+          e.metaKey ||
+          e.altKey)
+      ) {
+        e.preventDefault();
       }
       const action = keyLookupRef.current.get(e.code);
       if (action === "throttle") keysRef.current.up = false;
@@ -1577,13 +1983,22 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       const frame = rp.buffer.frameAt(rp.timeS);
       const car = frame?.cars.find((c) => c.id === "player");
       if (car) {
+        // Flashback is free: no penalty, and the lap is not deleted. Record the
+        // teleport so the leaderboard can explain the sample jump it causes;
+        // without the event the speed check would reject the lap as a teleport cheat.
+        const sBefore = physics.sMeters;
         // Re-seat the car on the ground at that pose (heading from the recorded orientation), rolling at its speed
         replayFwd.set(0, 0, 1).applyQuaternion(replayQuat.set(car.qx, car.qy, car.qz, car.qw));
         const pose = { x: car.x, z: car.z, yawRad: Math.atan2(replayFwd.x, replayFwd.z), speedMs: car.speedKmh / 3.6, s: car.s };
         if (physics.restorePose) physics.restorePose(pose);
         else physics.teleportToDistance(car.s ?? physics.sMeters, pose.speedMs);
+        lapRecorderRef.current?.noteFlashback({
+          t: (physics.telemetry.currentLapTimeMs ?? 0) / 1000,
+          sBefore,
+          sAfter: car.s ?? sBefore,
+          speedKmh: car.speedKmh,
+        });
       }
-      physics.invalidateLap?.();
       rp.buffer.truncateAfter(rp.timeS);
       replayClockS = rp.timeS;
       lastReplayPushS = rp.timeS;
@@ -1889,8 +2304,9 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       );
       physics.telemetry.race = mpRace && mpFrame ? mpRace.status(mpFrame, physics.vxMs) : aiField?.status();
 
-      // Track limits: race control judges each excursion once the car is back on the asphalt. Practice deletes
-      // the lap; a race gives warnings, and every third one is a time penalty served at the flag.
+      // Track limits: race control judges each excursion once the car is back on the asphalt. Practice no longer
+      // deletes the lap: every strike adds +3 s to that lap's classified time (strikes accumulate). A race gives
+      // warnings, and every third one is a time penalty served at the flag.
       {
         const t = physics.telemetry;
         const raceNow = t.race;
@@ -1922,9 +2338,19 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
             racePosition: raceNow?.position,
             active: !physics.aiAutopilot && !mpFrozen && raceNow?.phase !== "lights" && raceNow?.phase !== "finished",
           });
-          // A strike also deletes the lap time (it never counts as a best lap)
-          if (tlEvent && tlEvent.kind !== "cleared" && tlEvent.kind !== "no_advantage" && tlEvent.lap === t.lapCount) {
-            physics.invalidateLap?.();
+          // Practice: a strike no longer deletes the lap — it adds +3 s to the lap
+          // still running, recorded by the lap recorder so the classified time (not
+          // the raw cut time) is what counts for bests and uploads. Race behaviour
+          // is unchanged.
+          if (tlEvent && tlEvent.lap === t.lapCount) {
+            if (session === "practice") {
+              if (tlEvent.kind === "penalty") {
+                lapRecorderRef.current?.noteTrackLimitsPenalty((tlEvent.penaltyS ?? 0) * 1000);
+              }
+            }
+            // Race: no lap deletion any more. Warnings and time penalties already
+            // live in the monitor's penaltyTotalS (applied to the race result), so
+            // deleting the lap as well would be a double punishment.
           }
         }
         physics.trackLimitsHold = trackLimits.judging;
@@ -1944,6 +2370,37 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
             ? aiField.lightsOn
             : null
       );
+
+      // Wall return (activation-code run only, manual or autopilot driving): a car
+      // that has been fast and is now barely moving for 2.5 s is stuck against a
+      // wall, so it is put back on the centreline at the same spot at a low speed.
+      // Without a buff nothing changes.
+      if (driving && buffActiveRef.current && !pausedRef.current) {
+        const wr = wallReturnRef.current;
+        const speedMs = Math.abs(physics.vxMs);
+        if (speedMs > 10) {
+          wr.seenFast = true;
+          wr.stuckSinceMs = null;
+        } else if (speedMs < 2) {
+          if (wr.stuckSinceMs === null) wr.stuckSinceMs = nowMs;
+          else if (wr.seenFast && nowMs - wr.stuckSinceMs >= 2500 && nowMs - wr.lastReturnMs >= 5000) {
+            const sBefore = physics.sMeters;
+            const optimalKmh = track.getSampleAtDistance(sBefore).optimalSpeedKmh ?? 0;
+            const returnKmh = Math.max(10, Math.min(45, optimalKmh / 3));
+            physics.teleportToDistance(sBefore, returnKmh / 3.6, 0);
+            wr.lastReturnMs = nowMs;
+            wr.stuckSinceMs = null;
+            lapRecorderRef.current?.noteWallReturn({
+              t: (physics.telemetry.currentLapTimeMs ?? 0) / 1000,
+              sBefore,
+              sAfter: sBefore,
+              speedKmh: returnKmh,
+            });
+          }
+        } else {
+          wr.stuckSinceMs = null;
+        }
+      }
 
       // Laps: summary card, personal best (saved, and raced as the ghost) — practice only
       if (driving && !aiField && !mpRace) {
@@ -1987,6 +2444,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
           driverCode: settingsNow.profile.code,
           teamColorHex: settingsNow.profile.color,
           name: settingsNow.profile.name,
+          rainbow: buffActiveRef.current,
           race: mpRace?.progress(),
           vehicle: vehicleModelRef.current,
           trackId,
@@ -2215,12 +2673,15 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       const shake = cockpitShake.update(dtSeconds, physics.telemetry);
 
       // Update persistent 4-wheel skidmark ribbons, tire smoke/gravel/rooster-tail particles & opponent 3D cars
+      visualFx.rainbowEnabled = buffActiveRef.current;
       visualFx.update(
         dtSeconds,
         physics.worldQuaternion,
         physics.vxMs,
         physics.wheels,
-        renderPeers
+        renderPeers,
+        physics.worldPosition,
+        physics.telemetry.throttle
       );
 
 
@@ -2826,6 +3287,15 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       multiplayerSync.onStatusChange = undefined;
       wheelDisplay?.dispose();
       wingMirrors?.dispose();
+      // Per-instance resources created in this effect (carRig.dispose is the
+      // same call already used on car swap; the spark geometry/material are
+      // created here and used nowhere else). The track GLB group and visualFx
+      // group are deliberately NOT traversed here: scene-builder keeps shared
+      // debug materials, so a blind traverse could free resources a later
+      // mount still uses.
+      carRig.dispose();
+      sparkGeom.dispose();
+      (sparkPoints.material as THREE.Material).dispose();
       postFx.dispose();
       env.dispose();
       rainFx.dispose();
@@ -2920,6 +3390,9 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
   useEffect(() => {
     void loadPbGhost(true);
     void refreshLeaderboard();
+    setUploadBestState("idle");
+    setUploadBestRank(null);
+    setUploadBestError(null);
     wheelFfb.resetMeter();
   }, [vehicleModel, loadPbGhost, refreshLeaderboard]);
 
@@ -2968,30 +3441,142 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     []
   );
 
-  /** The pause menu's controls list, from the player's bindings */
+  /** The full controls list (pause menu only), from the player's bindings */
   const controlsCheatSheet = useMemo(() => {
     const keys = (codes: string[]) => codes.map(keyLabel).join(" · ") || "—";
     const k = settings.keys;
     const rows: [string, string][] = [
-      ["Throttle / brake", `${keys(k.throttle)} / ${keys(k.brake)}`],
-      ["Steer", `${keys(k.steerLeft)} / ${keys(k.steerRight)}`],
-      ["Boost (manual override)", `${keys(k.boostHold)} · ${keys(k.boostLatch)}`],
-      ["Active aero X / Z", keys(k.aero)],
-      ["Gear up / down", `${keys(k.shiftUp)} / ${keys(k.shiftDown)}`],
-      ["Camera", keys(k.camera)],
-      ["Cockpit FOV", "[ / ]"],
-      ["Racing line", keys(k.racingLine)],
-      ["Restart", keys(k.restart)],
-      ["Half throttle", keys(k.throttleHalf)],
-      ["Instant replay", keys(k.replay)],
+      ["油门 / 刹车", `${keys(k.throttle)} / ${keys(k.brake)}`],
+      ["转向", `${keys(k.steerLeft)} / ${keys(k.steerRight)}`],
+      ["增压（按住）", keys(k.boostHold)],
+      ["增压（锁定）", keys(k.boostLatch)],
+      ["主动空力", keys(k.aero)],
+      ["升挡 / 降挡", `${keys(k.shiftUp)} / ${keys(k.shiftDown)}`],
+      ["视角", keys(k.camera)],
+      ["赛车线", keys(k.racingLine)],
+      ["静音", keys(k.mute)],
+      ["自动驾驶", keys(k.autopilot)],
+      ["鼠标转向", keys(k.mouseSteer)],
+      ["驾驶舱视场角", "[ / ]"],
+      ["重开", keys(k.restart)],
+      ["半油门", keys(k.throttleHalf)],
+      ["即时回放", keys(k.replay)],
+      ["下一页仪表", keys(k.mfdPage)],
+      ["按键显示", keys(k.keysOverlay)],
     ];
     const pb = settings.padButtons;
     rows.push([
-      "Pad",
-      `RT / LT · stick · ${padButtonLabel(pb.boost)} boost · ${padButtonLabel(pb.shiftUp)}/${padButtonLabel(pb.shiftDown)} gears`,
+      "手柄 · 驾驶",
+      `RT 油门 · LT 刹车 · 摇杆转向 · ${padButtonLabel(pb.boost)} 增压 · ${padButtonLabel(pb.shiftUp)}/${padButtonLabel(pb.shiftDown)} 挡位`,
     ]);
+    rows.push([
+      "手柄 · 功能",
+      `${padButtonLabel(pb.aero)} 空力 · ${padButtonLabel(pb.camera)} 视角 · ${padButtonLabel(pb.racingLine)} 赛车线 · ${padButtonLabel(pb.restart)} 重开 · ${padButtonLabel(pb.pause)} 菜单 · ${padButtonLabel(pb.mfd)} 仪表 · ${padButtonLabel(pb.mfdPage)} 下一页 · ${padButtonLabel(pb.hud)} HUD`,
+    ]);
+    rows.push(["保留按键", "Esc 暂停菜单 · / 输入 /boost"]);
     return rows;
   }, [settings.keys, settings.padButtons]);
+
+  /**
+   * Driving overlay rows, filtered to the input method actually in use.
+   * Priority: on-screen touch controls when they are shown, otherwise the
+   * device chosen in settings. This is a useMemo over settings + touch
+   * visibility, so changing device (or toggling touch) in the pause menu
+   * re-filters the overlay on the next render instead of freezing it to
+   * whatever was active when the drive started.
+   */
+  const drivingControls = useMemo((): {
+    mode: "keyboard" | "controller" | "wheel" | "touch";
+    rows: readonly (readonly [string, string])[];
+  } => {
+    const keys = (codes: string[]) => codes.map(keyLabel).join(" · ") || "—";
+    const k = settings.keys;
+    if (touchVisible) {
+      return {
+        mode: "touch",
+        rows: [
+          ["左下方向盘", settings.touch.tiltSteer ? "倾斜设备转向" : "拖动转向"],
+          ["右下踏板", "刹车 · 油门"],
+          ["升挡 / 降挡", "▲ / ▼"],
+          ["增压 / 主动空力", "增压 · X/Z"],
+          ["左上按钮", "菜单 · 视角"],
+        ],
+      };
+    }
+    if (settings.device === "controller") {
+      const pb = settings.padButtons;
+      return {
+        mode: "controller",
+        rows: [
+          [
+            "手柄 · 驾驶",
+            `RT 油门 · LT 刹车 · 摇杆转向 · ${padButtonLabel(pb.boost)} 增压 · ${padButtonLabel(pb.shiftUp)}/${padButtonLabel(pb.shiftDown)} 挡位`,
+          ],
+          [
+            "手柄 · 功能",
+            `${padButtonLabel(pb.aero)} 空力 · ${padButtonLabel(pb.camera)} 视角 · ${padButtonLabel(pb.racingLine)} 赛车线 · ${padButtonLabel(pb.restart)} 重开 · ${padButtonLabel(pb.pause)} 菜单 · ${padButtonLabel(pb.mfd)} 仪表 · ${padButtonLabel(pb.mfdPage)} 下一页 · ${padButtonLabel(pb.hud)} HUD`,
+          ],
+        ],
+      };
+    }
+    if (settings.device === "wheel") {
+      const w = settings.wheel;
+      const rows: [string, string][] = [
+        [
+          "方向盘 / 踏板",
+          w.steer && w.throttle && w.brake
+            ? "方向盘转向 · 油门踏板 · 刹车踏板"
+            : "方向盘未校准 · 请在方向盘设置中校准",
+        ],
+      ];
+      const bound = (label: string, b: { button: number } | null) =>
+        b ? `${padButtonLabel(b.button)} ${label}` : null;
+      const driving = [
+        bound("增压", w.buttons.boost),
+        bound("升挡", w.buttons.shiftUp),
+        bound("降挡", w.buttons.shiftDown),
+      ].filter((v): v is string => v !== null);
+      const functions = [
+        bound("空力", w.buttons.aero),
+        bound("视角", w.buttons.camera),
+        bound("赛车线", w.buttons.racingLine),
+        bound("重开", w.buttons.restart),
+        bound("菜单", w.buttons.pause),
+        bound("仪表", w.buttons.mfd),
+        bound("下一页", w.buttons.mfdPage),
+        bound("HUD", w.buttons.hud),
+      ].filter((v): v is string => v !== null);
+      if (driving.length > 0) rows.push(["方向盘 · 驾驶", driving.join(" · ")]);
+      if (functions.length > 0) rows.push(["方向盘 · 功能", functions.join(" · ")]);
+      if (driving.length === 0 && functions.length === 0)
+        rows.push(["方向盘按键", "未绑定"]);
+      if (!w.buttons.pause) rows.push(["暂停", "Esc（键盘）"]);
+      return { mode: "wheel", rows };
+    }
+    return {
+      mode: "keyboard",
+      rows: [
+        ["油门 / 刹车", `${keys(k.throttle)} / ${keys(k.brake)}`],
+        ["转向", `${keys(k.steerLeft)} / ${keys(k.steerRight)}`],
+        ["增压（按住）", keys(k.boostHold)],
+        ["增压（锁定）", keys(k.boostLatch)],
+        ["主动空力", keys(k.aero)],
+        ["升挡 / 降挡", `${keys(k.shiftUp)} / ${keys(k.shiftDown)}`],
+        ["视角", keys(k.camera)],
+        ["赛车线", keys(k.racingLine)],
+        ["静音", keys(k.mute)],
+        ["自动驾驶", keys(k.autopilot)],
+        ["鼠标转向", keys(k.mouseSteer)],
+        ["驾驶舱视场角", "[ / ]"],
+        ["重开", keys(k.restart)],
+        ["半油门", keys(k.throttleHalf)],
+        ["即时回放", keys(k.replay)],
+        ["下一页仪表", keys(k.mfdPage)],
+        ["按键显示", keys(k.keysOverlay)],
+        ["保留按键", "Esc 暂停菜单 · / 输入 /boost"],
+      ],
+    };
+  }, [settings, touchVisible]);
 
   const keyNames = useMemo(() => {
     const first = (codes: string[]) => (codes[0] ? keyLabel(codes[0]) : "—");
@@ -3008,10 +3593,10 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
 
   const launchHintText =
     settings.device === "wheel"
-      ? "Press the throttle to launch · pause button or Esc for menu"
+      ? "踩下油门起步 · 暂停按钮或 Esc 打开菜单"
       : settings.device === "controller"
-        ? `Hold RT to launch · ${padButtonLabel(settings.padButtons.pause)} for menu`
-        : `Hold ${keyLabel(settings.keys.throttle[0])} to launch · Esc for menu`;
+        ? `按住 RT 起步 · ${padButtonLabel(settings.padButtons.pause)} 打开菜单`
+        : `按住 ${keyLabel(settings.keys.throttle[0])} 起步 · Esc 打开菜单`;
 
   const menuProps = {
     telemetry,
@@ -3053,6 +3638,7 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
     onSelectTurn: handleSelectTurn,
     onHostP2PRoom: handleHostP2PRoom,
     onJoinP2PRoom: handleJoinP2PRoom,
+    onCancelJoinP2PRoom: handleCancelJoinP2PRoom,
     onCreateManualOffer: handleCreateManualOffer,
     onAcceptManualOffer: handleAcceptManualOffer,
     onAcceptManualAnswer: handleAcceptManualAnswer,
@@ -3081,6 +3667,9 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       vrSupported,
       vrActive,
       onEnterVr: () => enterVrRef.current?.(),
+      onRunGraphicsTest: () => void finishBenchmark("manual"),
+      graphicsTestRunning: benchmarkRunning,
+      graphicsTestDisabled: phase !== "title",
     },
     leaderboardPanel: {
       trackName: getTrackInfo(trackId).name,
@@ -3093,9 +3682,23 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       onRaceGhost: (entry: LeaderboardEntry) => void handleRaceGhostEntry(entry),
       onImportGhost: (file: File) => void handleImportGhost(file),
       onExportBest: () => void handleExportBest(),
+      onUploadBest: () => void handleUploadBest(),
+      uploadState: uploadBestState,
+      uploadRank: uploadBestRank,
+      uploadError: uploadBestError,
       onExportDriverKey: handleExportDriverKey,
       onImportDriverKey: (file: File) => void handleImportDriverKey(file),
       driverKeyNotice,
+      profileName: settings.profile.name,
+      profileCode: settings.profile.code,
+      onDeleteRemote: remoteDeleteSupported ? (entry: LeaderboardEntry) => void handleDeleteRemote(entry) : undefined,
+      deletingId,
+      deleteError,
+      onChangeProfile: (patch: { name?: string; code?: string }) =>
+        handleChangeSettings((prev) => ({
+          ...prev,
+          profile: { ...prev.profile, ...patch, generated: patch.name !== undefined ? false : prev.profile.generated },
+        })),
     },
   };
 
@@ -3131,6 +3734,8 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
           onOpenControls={() => openControls("pause")}
           onExitToTitle={exitToTitle}
           controlsCheatSheet={controlsCheatSheet}
+          drivingControls={drivingControls}
+          keysOverlayKeyLabel={settings.keys.keysOverlay[0] ? keyLabel(settings.keys.keysOverlay[0]) : undefined}
           hud={settings.hud}
           virtualMirror={virtualMirrorOn}
           ffbMeter={
@@ -3203,6 +3808,9 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       {phase === "title" ? (
         <TitleMenu
           {...menuProps}
+          buffActive={buffActive}
+          onBuffActivated={activateBuff}
+          onBuffCleared={clearBuff}
           onCycleCamera={() => setCameraMode(nextCameraMode(cameraMode))}
           initialRoomCode={inviteRoom ?? ""}
           initialPanel={titleInitialPanel ?? (inviteRoom ? "multiplayer" : null)}
@@ -3255,6 +3863,14 @@ export const LibreCorsaSimulator: React.FC<LibreCorsaSimulatorProps> = ({ trackI
       {loadingVisible ? (
         <LoadingScreen track={track} ready={assetsReady} onStart={handleLoadingStart} onDone={handleLoadingDone} />
       ) : null}
+
+      <GraphicsBenchmarkOverlay
+        state={benchmarkUi}
+        onStart={() => void finishBenchmark("auto")}
+        onSkip={skipBenchmarkPrompt}
+        onCancel={cancelBenchmark}
+        onCloseResult={() => setBenchmarkUi(null)}
+      />
     </div>
   );
 };

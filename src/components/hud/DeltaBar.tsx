@@ -88,11 +88,11 @@ export const DeltaBar: React.FC<{ deltaS: number | null; width?: number }> = ({ 
       className="relative h-[26px]"
       style={{ width }}
       role="meter"
-      aria-label="Delta to reference lap"
+      aria-label="与参考圈的差距"
       aria-valuemin={-1}
       aria-valuemax={1}
       aria-valuenow={has ? Math.max(-1, Math.min(1, d)) : 0}
-      aria-valuetext={has ? `${formatDelta(d)} seconds, ${trend}` : "No reference lap"}
+      aria-valuetext={has ? `${formatDelta(d)}秒，${trend === "gaining" ? "变快" : trend === "losing" ? "变慢" : "稳定"}` : "无参考圈"}
     >
       <div className="absolute inset-x-0 top-2 h-2.5 overflow-hidden rounded-full bg-[#08090D]/70 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)]">
         <span

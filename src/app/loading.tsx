@@ -16,11 +16,11 @@ export default function Loading() {
             <span className="lc-disp text-[clamp(72px,12vw,168px)] tracking-[-0.02em] tabular-nums short:text-[64px]">
               0%
             </span>
-            <span className="lc-lbl lc-breathe">Starting up</span>
+            <span className="lc-lbl lc-breathe">启动中</span>
           </div>
           <div
             role="img"
-            aria-label="Start lights: 0 of 5"
+            aria-label="发车灯：0/5"
             className="mb-2 flex w-fit gap-2 rounded-full border border-[#262B3D] bg-[#0D0F15] px-3 py-2.5 sm:mb-[30px] short:mb-2"
           >
             {Array.from({ length: 5 }, (_, i) => (

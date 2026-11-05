@@ -121,23 +121,36 @@ const TOAST_MS = 12_000;
 
 /**
  * Post-lap toast, bottom right above the MFD and dash (top centre on touch screens, clear of the on-screen pedals): lap time, status
- * badge and sector colours, out of the way while driving. It clears itself after a few seconds unless the
- * pointer is on it or a submit is in flight. Clicking it opens the full card with sector splits vs the
+ * badge and sector colours, out of the way while driving. Clicking it opens the full card with sector splits vs the
  * session best, stats and per-corner speeds, which stays until it is collapsed or closed.
+ * While a lap can still be uploaded and has not been sent yet, the toast never
+ * clears itself: it stays until the player uploads it or explicitly closes it
+ * (the X on the toast, or 关闭 on the card). Only after a successful upload,
+ * or when there is no upload available, does the 12-second auto-clear apply.
  */
 export const LapSummary: React.FC<LapSummaryProps> = (props) => {
-  const { summary: s, onClose, submitState = "idle" } = props;
+  const { summary: s, onClose, submitState = "idle", onSubmit } = props;
   const [expanded, setExpanded] = useState(false);
   const [hovered, setHovered] = useState(false);
   // The HUD re-renders every frame with a fresh onClose; the timer must not restart for that
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
+  // Same for onSubmit: it is a fresh arrow function every render, so read it
+  // through a ref instead of putting it in the timer effect's dependencies,
+  // or the 12-second timer after a successful upload would restart forever.
+  const submitRef = useRef(onSubmit);
+  submitRef.current = onSubmit;
 
   // A new lap starts collapsed again
   useEffect(() => setExpanded(false), [s.lapNumber]);
 
   useEffect(() => {
     if (expanded || hovered || submitState === "sending") return;
+    // Upload pending: never auto-clear, so the player cannot miss the upload
+    // button by driving on for 12 seconds. The card only goes away when the
+    // lap is sent (then the usual 12-second clear applies) or the player
+    // explicitly closes it.
+    if (submitRef.current && submitState !== "sent") return;
     const id = window.setTimeout(() => closeRef.current(), TOAST_MS);
     return () => window.clearTimeout(id);
   }, [expanded, hovered, submitState, s.lapNumber]);
@@ -147,6 +160,24 @@ export const LapSummary: React.FC<LapSummaryProps> = (props) => {
     if (!expanded) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setExpanded(false);
+      // Driving-phase overlay: stop page scroll/back on Space/Arrows/
+      // Backspace/Tab when the key did not land on an input or button.
+      // (The simulator shield already blocks these while driving; this
+      // keeps the card itself from scrolling the page if that shield
+      // ever stops applying, e.g. after the race ends.)
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "BUTTON" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (e.code === "Space" || e.code === "ArrowUp" || e.code === "ArrowDown" || e.code === "ArrowLeft" || e.code === "ArrowRight" || e.code === "Backspace" || e.code === "Tab") {
+        e.preventDefault();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -168,15 +199,39 @@ export const LapSummary: React.FC<LapSummaryProps> = (props) => {
       {expanded ? (
         <LapCard {...props} onCollapse={() => setExpanded(false)} />
       ) : (
-        <LapToast summary={s} onOpen={() => setExpanded(true)} onClose={onClose} />
+        <LapToast
+          summary={s}
+          onOpen={() => setExpanded(true)}
+          onClose={onClose}
+          canSubmit={Boolean(onSubmit) && submitState !== "sent"}
+          canSave={Boolean(props.onSaveGhost)}
+        />
       )}
     </div>,
     document.body
   );
 };
 
+/** Total time penalty in a lap: track limits (+3 s per strike) + autopilot (+30 s once). Flashback is free and adds nothing. */
+function totalPenaltyMs(s: LapSummaryData): number {
+  return (s.trackLimitsPenaltyMs ?? 0) + (s.autopilotPenaltyMs ?? 0);
+}
+
+function penaltyPills(s: LapSummaryData): React.ReactNode {
+  const pills: React.ReactNode[] = [];
+  if (s.trackLimitsPenaltyMs > 0)
+    pills.push(<Pill key="tl" size="sm" color={HUD_YELLOW}>+{(s.trackLimitsPenaltyMs / 1000).toFixed(0)}s 赛道限制</Pill>);
+  if (s.autopilotPenaltyMs > 0)
+    pills.push(<Pill key="ap" size="sm" color={HUD_YELLOW}>+{(s.autopilotPenaltyMs / 1000).toFixed(0)}s 自动驾驶</Pill>);
+  if (pills.length === 0) return null;
+  return <span className="inline-flex gap-2">{pills}</span>;
+}
+
 function statusBadge(s: LapSummaryData): React.ReactNode {
-  if (!s.valid) return <Pill size="sm" color={HUD_RED} textColor="#F5F7FA">INVALID</Pill>;
+  // Whole-lap invalidation was abolished: a penalised lap is shown by its total
+  // penalty, never as invalid. A free flashback lap shows its normal PB/delta badge.
+  const total = totalPenaltyMs(s);
+  if (total > 0) return <Pill size="sm" color={HUD_YELLOW}>+{(total / 1000).toFixed(0)}s 罚时</Pill>;
   if (s.isPersonalBest) return <Pill size="sm" color={HUD_PURPLE} textColor="#F5F7FA">PB</Pill>;
   if (s.deltaToBestMs === null) return null;
   return (
@@ -186,25 +241,51 @@ function statusBadge(s: LapSummaryData): React.ReactNode {
   );
 }
 
-/** Collapsed toast: lap time, status and the three sector colours; the whole card opens the details */
-const LapToast: React.FC<{ summary: LapSummaryData; onOpen: () => void; onClose: () => void }> = ({
-  summary: s,
-  onOpen,
-  onClose,
-}) => {
+/** Collapsed toast: lap time, status and the three sector colours; the whole card opens the details.
+ * The toast is the only way to reach the submit / save actions, so the hint
+ * sits directly above it as its own pill instead of inside it: inside, the
+ * text widened the pill until it ran off screen, while above it the hint is
+ * always fully visible, right-aligned to the toast, and itself clickable.
+ * Without the hint players read the toast as a read-only result and never
+ * open the card. */
+const LapToast: React.FC<{
+  summary: LapSummaryData;
+  onOpen: () => void;
+  onClose: () => void;
+  canSubmit?: boolean;
+  canSave?: boolean;
+}> = ({ summary: s, onOpen, onClose, canSubmit = false, canSave = false }) => {
+  const hint = canSubmit && canSave
+    ? "点击展开 · 可提交 / 保存"
+    : canSubmit
+      ? "点击展开 · 可提交至排行榜"
+      : canSave
+        ? "点击展开 · 可保存幽灵车"
+        : "点击查看分段";
   const tint = statusTint(s);
   return (
-    <div
-      className="ml-auto flex w-fit max-w-full items-center gap-3 rounded-full border pointer-coarse:mx-auto bg-[#08090D]/75 py-2 pr-2 pl-[18px] text-[#F5F7FA] shadow-[0_14px_40px_rgba(0,0,0,0.5)] backdrop-blur-[14px]"
-      style={{ borderColor: tint.border }}
-    >
+    <div className="flex flex-col items-end gap-2 pointer-coarse:items-center">
       <button
         type="button"
         onClick={onOpen}
-        aria-label={`Lap ${s.lapNumber}: show sector data`}
+        aria-label={`第 ${s.lapNumber} 圈：${hint}`}
+        className="inline-flex max-w-full cursor-pointer items-center gap-2 rounded-full border border-[#CCFF00]/35 bg-[#08090D]/75 px-3.5 py-1.5 font-f1-mono text-[11px] font-extrabold tracking-[0.08em] whitespace-nowrap text-[#CCFF00] shadow-[0_10px_30px_rgba(0,0,0,0.5)] backdrop-blur-[14px] transition-opacity hover:opacity-85"
+      >
+        <span aria-hidden className="h-[6px] w-[6px] shrink-0 rounded-full bg-[#CCFF00]" />
+        {hint}
+        <ChevronUp className="h-3 w-3 shrink-0" strokeWidth={2.6} />
+      </button>
+      <div
+        className="ml-auto flex w-fit max-w-full items-center gap-3 rounded-full border pointer-coarse:mx-auto bg-[#08090D]/75 py-2 pr-2 pl-[18px] text-[#F5F7FA] shadow-[0_14px_40px_rgba(0,0,0,0.5)] backdrop-blur-[14px]"
+        style={{ borderColor: tint.border }}
+      >
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={`第 ${s.lapNumber} 圈：显示分段数据`}
         className="flex min-w-0 cursor-pointer items-center gap-3 text-left transition-opacity hover:opacity-85 sm:gap-3.5"
       >
-        <span className="lc-lbl shrink-0 !text-[9px] !font-extrabold !tracking-[0.18em]">LAP {s.lapNumber}</span>
+        <span className="lc-lbl shrink-0 !text-[9px] !font-extrabold !tracking-[0.18em]">第{s.lapNumber}圈</span>
         <span className="lc-data text-[22px] leading-none sm:text-[24px]">{formatLapTime(s.lapTimeMs)}</span>
         {statusBadge(s)}
         <span className="flex shrink-0 gap-[3px]" aria-hidden>
@@ -217,18 +298,19 @@ const LapToast: React.FC<{ summary: LapSummaryData; onOpen: () => void; onClose:
           ))}
         </span>
         <span className="lc-lbl hidden shrink-0 items-center gap-1 !text-[9px] !font-extrabold !tracking-[0.18em] sm:inline-flex">
-          Sectors <ChevronUp className="h-3 w-3" strokeWidth={2.6} />
+          分段 <ChevronUp className="h-3 w-3" strokeWidth={2.6} />
         </span>
       </button>
       <span aria-hidden className="h-6 w-px shrink-0 bg-[#262B3D]" />
       <button
         type="button"
         onClick={onClose}
-        aria-label="Dismiss lap summary"
+        aria-label="关闭单圈总结"
         className="inline-flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-[#1B1F2B] text-[#8E96AA] transition-colors hover:text-[#F5F7FA]"
       >
         <X className="h-3.5 w-3.5" strokeWidth={2.4} />
       </button>
+      </div>
     </div>
   );
 };
@@ -275,10 +357,15 @@ const LapCard: React.FC<LapSummaryProps & { onCollapse: () => void }> = ({
   };
 
   let badge: React.ReactNode = null;
-  if (!s.valid) {
-    badge = <Pill color={HUD_RED} textColor="#F5F7FA">INVALID · TRACK LIMITS</Pill>;
+  if (totalPenaltyMs(s) > 0) {
+    badge = (
+      <span className="inline-flex gap-2">
+        {penaltyPills(s)}
+        {s.isPersonalBest ? <Pill color={HUD_PURPLE} textColor="#F5F7FA">个人最佳</Pill> : null}
+      </span>
+    );
   } else if (s.isPersonalBest) {
-    badge = <Pill color={HUD_PURPLE} textColor="#F5F7FA">PERSONAL BEST</Pill>;
+    badge = <Pill color={HUD_PURPLE} textColor="#F5F7FA">个人最佳</Pill>;
   } else if (s.deltaToBestMs !== null) {
     const ahead = s.deltaToBestMs <= 0;
     badge = (
@@ -288,28 +375,28 @@ const LapCard: React.FC<LapSummaryProps & { onCollapse: () => void }> = ({
 
   const submitLabel =
     submitState === "sending"
-      ? "Sending…"
+      ? "发送中…"
       : submitState === "sent"
         ? submitRank != null
-          ? `Sent · P${submitRank}`
-          : "Sent"
+          ? `已发送 · P${submitRank}`
+          : "已发送"
         : submitState === "error"
-          ? "Failed — retry"
-          : "Submit to leaderboard";
+          ? "发送失败 — 重试"
+          : "提交至排行榜";
   const submitDisabled = !s.valid || submitState === "sending" || submitState === "sent";
 
   const stats: { label: string; value: string }[] = [
-    { label: "TOP KM/H", value: `${Math.round(s.topSpeedKmh)}` },
-    { label: "AVG KM/H", value: `${Math.round(s.avgSpeedKmh)}` },
-    { label: "FULL THR", value: `${s.fullThrottlePct.toFixed(0)}%` },
-    { label: "BRAKING", value: `${s.brakingPct.toFixed(0)}%` },
+    { label: "最高 KM/H", value: `${Math.round(s.topSpeedKmh)}` },
+    { label: "平均 KM/H", value: `${Math.round(s.avgSpeedKmh)}` },
+    { label: "全油门", value: `${s.fullThrottlePct.toFixed(0)}%` },
+    { label: "刹车", value: `${s.brakingPct.toFixed(0)}%` },
   ];
   const tint = statusTint(s);
 
   return (
     <div
       role="dialog"
-      aria-label={`Lap ${s.lapNumber} summary`}
+      aria-label={`第 ${s.lapNumber} 圈总结`}
       className="flex max-h-[min(calc(100dvh-9rem),var(--lc-room,100dvh))] w-full flex-col gap-3.5 overflow-y-auto rounded-[28px] border bg-[#0A0B10]/90 p-5 text-[#F5F7FA] backdrop-blur-[20px] pointer-coarse:max-h-[calc(100dvh-12rem)] short:gap-2.5 short:p-4"
       style={{ borderColor: tint.border, boxShadow: `0 30px 80px rgba(0,0,0,0.6), 0 0 0 6px ${tint.ring}` }}
     >
@@ -318,7 +405,7 @@ const LapCard: React.FC<LapSummaryProps & { onCollapse: () => void }> = ({
         <div className="flex min-w-0 flex-col gap-1.5">
           <span className="lc-data inline-flex items-center gap-2 text-[12px] tracking-[0.12em]">
             <span aria-hidden className="h-[7px] w-[7px] rounded-full bg-[#CCFF00]" />
-            LAP {s.lapNumber}
+            第{s.lapNumber}圈
           </span>
           <span className="lc-data text-[40px] leading-none tracking-[-0.02em] sm:text-[46px] short:text-[34px]">
             {formatLapTime(s.lapTimeMs)}
@@ -329,7 +416,7 @@ const LapCard: React.FC<LapSummaryProps & { onCollapse: () => void }> = ({
           <button
             type="button"
             onClick={onCollapse}
-            aria-label="Collapse lap summary"
+            aria-label="收起单圈总结"
             className="inline-flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-[#262B3D] text-[#8E96AA] transition-colors hover:border-[#3A4157] hover:text-[#F5F7FA]"
           >
             <ChevronDown className="h-4 w-4" strokeWidth={2.4} />
@@ -356,10 +443,26 @@ const LapCard: React.FC<LapSummaryProps & { onCollapse: () => void }> = ({
         })}
       </div>
 
+      {/* Penalty breakdown: raw time + itemised penalties = classified time. Flashback is free and adds nothing, but is listed so the lap's history is transparent. */}
+      {totalPenaltyMs(s) > 0 || (s.flashbackCount ?? 0) > 0 ? (
+        <div className="flex items-center justify-between gap-2 rounded-[14px] bg-[#FFC800]/8 px-3.5 py-2.5">
+          <span className="lc-lbl !text-[9px] !font-extrabold !tracking-[0.18em]" style={{ color: HUD_YELLOW }}>
+            罚时明细
+          </span>
+          <span className="lc-data text-[15px]">
+            {formatLapTime(s.rawLapTimeMs)}
+            {s.trackLimitsPenaltyMs > 0 ? ` +${(s.trackLimitsPenaltyMs / 1000).toFixed(0)}s赛道限制` : ""}
+            {s.autopilotPenaltyMs > 0 ? ` +${(s.autopilotPenaltyMs / 1000).toFixed(0)}s自动驾驶` : ""}
+            {(s.flashbackCount ?? 0) > 0 ? ` · 闪回×${s.flashbackCount}免费` : ""}
+            {` = ${formatLapTime(s.lapTimeMs)}`}
+          </span>
+        </div>
+      ) : null}
+
       {/* Theoretical best */}
       <div className="flex items-center justify-between gap-2 rounded-[14px] bg-[#B845FF]/8 px-3.5 py-2.5">
         <span className="lc-lbl !text-[9px] !font-extrabold !tracking-[0.18em]" style={{ color: HUD_PURPLE }}>
-          Theoretical best
+          理论最佳
         </span>
         <span className="lc-data text-[18px]">
           {s.theoreticalBestMs === null ? EMPTY : formatLapTime(s.theoreticalBestMs)}
@@ -387,7 +490,7 @@ const LapCard: React.FC<LapSummaryProps & { onCollapse: () => void }> = ({
           className="flex flex-col gap-2 rounded-2xl border border-[#CCFF00]/30 bg-[#CCFF00]/[0.04] px-3.5 pt-3 pb-3.5"
         >
           <label htmlFor={nameId} className="lc-lbl !text-[9px] !font-extrabold !tracking-[0.18em] !text-[#CCFF00]">
-            Your name on the leaderboard
+            你在排行榜上的名字
           </label>
           <div className="flex gap-2">
             <input
@@ -406,12 +509,11 @@ const LapCard: React.FC<LapSummaryProps & { onCollapse: () => void }> = ({
               disabled={!draft.trim() || submitState === "sending"}
               className={`${BTN} shrink-0 border border-[#CCFF00] bg-[#CCFF00] text-[#08090D] disabled:cursor-not-allowed disabled:opacity-40`}
             >
-              {submitState === "sending" ? "Sending…" : "Upload lap"}
+              {submitState === "sending" ? "发送中…" : "上传圈速"}
             </button>
           </div>
           <p className="text-[12px] leading-snug text-[#8E96AA]">
-            We picked this name for you. Keep it or type your own: it shows next to your time, and you can change it later
-            under Display.
+            这是为你挑选的名字。保留或输入你自己的名字：它会显示在你的成绩旁，之后可在“显示”中更改。
           </p>
         </form>
       ) : null}
@@ -424,7 +526,7 @@ const LapCard: React.FC<LapSummaryProps & { onCollapse: () => void }> = ({
             onClick={onSaveGhost}
             className={`${BTN} border border-[#262B3D] bg-transparent text-[#C5CBD8] hover:border-[#CCFF00] hover:text-[#CCFF00]`}
           >
-            Save ghost file
+            保存幽灵车文件
           </button>
         ) : null}
         {onSubmit && !naming ? (
@@ -449,7 +551,7 @@ const LapCard: React.FC<LapSummaryProps & { onCollapse: () => void }> = ({
           onClick={onClose}
           className={`${BTN} border border-[#262B3D] bg-[#1B1F2B] text-[#F5F7FA] hover:border-[#3A4157] hover:bg-[#262B3D]`}
         >
-          Close
+          关闭
         </button>
       </div>
       {submitState === "error" && submitError ? (
@@ -491,7 +593,7 @@ const CornerChart: React.FC<{ corners: CornerStat[] }> = ({ corners }) => {
   return (
     <div className="flex flex-col gap-2 rounded-2xl border border-[#1B1F2B] bg-[#050608] px-3 pt-3 pb-2.5">
       <div className="flex items-center justify-between gap-2">
-        <span className="lc-lbl shrink-0 !text-[9px] !font-extrabold !tracking-[0.18em]">Corners · min km/h vs best</span>
+        <span className="lc-lbl shrink-0 !text-[9px] !font-extrabold !tracking-[0.18em]">弯道 · 最低 km/h 对比最佳</span>
         {cur && curDelta ? (
           <span className="lc-data flex min-w-0 items-baseline gap-1.5 text-[11px]">
             <span className="text-[#F5F7FA]">T{cur.turnNumber}</span>
@@ -507,7 +609,7 @@ const CornerChart: React.FC<{ corners: CornerStat[] }> = ({ corners }) => {
       </div>
 
       {corners.length === 0 ? (
-        <div className="py-2 font-f1-mono text-[11px] text-[#8E96AA]">No corner data</div>
+        <div className="py-2 font-f1-mono text-[11px] text-[#8E96AA]">无弯道数据</div>
       ) : (
         <>
           <div
@@ -546,15 +648,15 @@ const CornerChart: React.FC<{ corners: CornerStat[] }> = ({ corners }) => {
           <ul className="sr-only">
             {corners.map((c) => (
               <li key={c.turnNumber}>
-                T{c.turnNumber} {c.name}: {Math.round(c.minSpeedKmh)} km/h, {cornerDelta(c).text} vs best
+                T{c.turnNumber} {c.name}：{Math.round(c.minSpeedKmh)} km/h，对比最佳 {cornerDelta(c).text}
               </li>
             ))}
           </ul>
           <div className="flex flex-wrap gap-3.5">
             {[
-              { label: "Faster", color: HUD_GREEN },
-              { label: "Slower", color: HUD_YELLOW },
-              { label: "Same", color: SAME },
+              { label: "更快", color: HUD_GREEN },
+              { label: "更慢", color: HUD_YELLOW },
+              { label: "相同", color: SAME },
             ].map((k) => (
               <span
                 key={k.label}

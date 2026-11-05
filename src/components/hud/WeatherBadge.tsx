@@ -25,10 +25,10 @@ export interface WeatherHudState {
 
 /** Track surface word and colour from the water on the racing line */
 function surface(waterMm: number): { label: string; color: string } {
-  if (waterMm < 0.03) return { label: "Dry", color: "#F5F7FA" };
-  if (waterMm < 0.14) return { label: "Damp", color: HUD_YELLOW };
-  if (waterMm < 1.1) return { label: "Wet", color: "#3CCB4A" };
-  return { label: "Flooded", color: "#2E7BFF" };
+  if (waterMm < 0.03) return { label: "干燥", color: "#F5F7FA" };
+  if (waterMm < 0.14) return { label: "潮湿", color: HUD_YELLOW };
+  if (waterMm < 1.1) return { label: "湿滑", color: "#3CCB4A" };
+  return { label: "积水", color: "#2E7BFF" };
 }
 
 const clock = (h: number) => {
@@ -40,14 +40,14 @@ const clock = (h: number) => {
 export const WeatherBadge: React.FC<{ weather: WeatherHudState }> = ({ weather }) => {
   const s = surface(weather.waterMm);
   return (
-    <div className={`inline-flex h-8 items-center gap-3 rounded-full py-1 pr-3.5 pl-3.5 ${HUD_GLASS}`} role="status" aria-label="Weather">
+    <div className={`inline-flex h-8 items-center gap-3 rounded-full py-1 pr-3.5 pl-3.5 ${HUD_GLASS}`} role="status" aria-label="天气">
       {weather.timeMoving ? <span className="lc-data text-[11px] tabular-nums text-[#F5F7FA]">{clock(weather.clockH)}</span> : null}
       <span className="flex items-center gap-1.5">
-        <span className={HUD_LBL}>Air</span>
+        <span className={HUD_LBL}>空气</span>
         <span className="lc-data text-[12px] tabular-nums text-[#F5F7FA]">{weather.airC.toFixed(0)}°</span>
       </span>
       <span className="flex items-center gap-1.5">
-        <span className={HUD_LBL}>Track</span>
+        <span className={HUD_LBL}>赛道</span>
         <span className="lc-data text-[12px] tabular-nums text-[#F5F7FA]">{weather.trackC.toFixed(0)}°</span>
       </span>
       <span aria-hidden className="h-4 w-px bg-[#262B3D]" />
@@ -56,12 +56,12 @@ export const WeatherBadge: React.FC<{ weather: WeatherHudState }> = ({ weather }
       </span>
       {weather.rain > 0.05 ? (
         <span className="lc-data text-[11px] tracking-[0.1em] uppercase" style={{ color: weather.rain > 0.5 ? HUD_CYAN : HUD_SLATE }}>
-          {weather.rain > 0.5 ? "Heavy rain" : "Rain"}
+          {weather.rain > 0.5 ? "大雨" : "雨"}
         </span>
       ) : null}
       {weather.windSpeedMs !== undefined && weather.windSpeedMs >= 0.5 ? (
         <span className="flex items-center gap-1">
-          <span className={HUD_LBL}>{weather.windDirection ?? "Wind"}</span>
+          <span className={HUD_LBL}>{weather.windDirection ?? "风"}</span>
           <span className="lc-data text-[11px] tabular-nums text-[#C5CBD8]">{Math.round(weather.windSpeedMs * 3.6)} km/h</span>
         </span>
       ) : null}

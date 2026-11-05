@@ -14,11 +14,11 @@ import { COMPOUND_COLORS } from "./styles/hud-style-parts";
 export type MfdPageId = "elec" | "rel" | "tyre" | "fuel" | "stnd";
 
 const PAGES: { id: MfdPageId; tag: string; title: string }[] = [
-  { id: "elec", tag: "ELEC", title: "Electronics" },
-  { id: "rel", tag: "REL", title: "Relative" },
-  { id: "tyre", tag: "TYRE", title: "Tyres & brakes" },
-  { id: "fuel", tag: "FUEL", title: "Fuel & energy" },
-  { id: "stnd", tag: "STND", title: "Standings" },
+  { id: "elec", tag: "ELEC", title: "电子系统" },
+  { id: "rel", tag: "REL", title: "相对位置" },
+  { id: "tyre", tag: "TYRE", title: "轮胎与刹车" },
+  { id: "fuel", tag: "FUEL", title: "燃油与能量" },
+  { id: "stnd", tag: "STND", title: "排名" },
 ];
 
 /** D-pad quiet time after which an MFD opened via D-pad folds back to its compact status pill */
@@ -45,7 +45,7 @@ const CompoundBadge: React.FC<{ c?: TireCompound }> = ({ c }) =>
     <span
       className="inline-flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-full border-[2px] font-f1-mono text-[8px] leading-none font-extrabold text-[#F5F7FA]"
       style={{ borderColor: COMPOUND_COLORS[c] }}
-      aria-label={`${c} tyres`}
+      aria-label={`${c} 轮胎`}
     >
       {c[0].toUpperCase()}
     </span>
@@ -62,10 +62,10 @@ const PenaltyChip: React.FC<{ s?: number }> = ({ s }) =>
 
 const RelativePage: React.FC<{ rows: RelativeRow[]; racing: boolean }> = ({ rows, racing }) => {
   if (rows.length <= 1) {
-    return <Empty text="No cars on track" />;
+    return <Empty text="赛道上无车辆" />;
   }
   return (
-    <ol className="flex flex-col gap-[3px]" aria-label="Relative">
+    <ol className="flex flex-col gap-[3px]" aria-label="相对位置">
       {rows.map((r) => {
         const tone = r.isPlayer ? HUD_VOLT : r.lapDiff > 0 ? LAP_UP : r.lapDiff < 0 ? LAP_DOWN : "#F5F7FA";
         return (
@@ -118,15 +118,15 @@ const FuelPage: React.FC<{ t: CarTelemetry; laps: LapRecord[]; L: number }> = ({
   const f = fuelStrategy(t, laps, L);
   const ers = f.avgErsPct;
   const energy = [
-    <Stat key="b" label="Battery" value={`${Math.round(t.ersBatteryPercent)}%`} tone={HUD_CYAN} big={!f.hasFuel} />,
+    <Stat key="b" label="电池" value={`${Math.round(t.ersBatteryPercent)}%`} tone={HUD_CYAN} big={!f.hasFuel} />,
     <Stat
       key="e"
-      label="ERS / lap"
+      label="ERS / 圈"
       value={ers === null ? "—" : `${ers > 0 ? "−" : "+"}${Math.abs(ers).toFixed(1)}%`}
       tone={ers === null ? HUD_SLATE : ers > 2 ? HUD_YELLOW : HUD_GREEN}
       big={!f.hasFuel}
     />,
-    <Stat key="w" label="Tread / lap" value={f.avgWearPct === null ? "—" : `${f.avgWearPct.toFixed(1)}%`} big={!f.hasFuel} />,
+    <Stat key="w" label="胎面 / 圈" value={f.avgWearPct === null ? "—" : `${f.avgWearPct.toFixed(1)}%`} big={!f.hasFuel} />,
   ];
   if (!f.hasFuel) {
     return <div className="grid h-full grid-cols-3 gap-1.5">{energy}</div>;
@@ -134,23 +134,23 @@ const FuelPage: React.FC<{ t: CarTelemetry; laps: LapRecord[]; L: number }> = ({
   return (
     <div className="flex h-full flex-col gap-1.5">
       <div className="grid flex-1 grid-cols-2 gap-1.5">
-        <Stat label="Fuel" value={f.fuelKg.toFixed(1)} sub={f.lapsOfFuel !== null ? `${f.lapsOfFuel.toFixed(1)} laps` : "kg"} big />
+        <Stat label="燃油" value={f.fuelKg.toFixed(1)} sub={f.lapsOfFuel !== null ? `${f.lapsOfFuel.toFixed(1)} 圈` : "kg"} big />
         <Stat
-          label="Per lap"
+          label="每圈"
           value={f.avgFuelKg !== null ? f.avgFuelKg.toFixed(2) : "—"}
-          sub={f.targetKg !== null ? `target ${f.targetKg.toFixed(2)}` : "kg"}
+          sub={f.targetKg !== null ? `目标 ${f.targetKg.toFixed(2)}` : "kg"}
           big
         />
       </div>
       {f.raceLapsLeft !== null && f.avgFuelKg !== null ? (
         f.saveKg !== null ? (
           <div className="flex h-[30px] items-center justify-between rounded-[12px] bg-[#FFB300] px-2.5 font-f1-mono text-[11px] font-extrabold text-[#08090D] tabular-nums">
-            <span className="tracking-[0.12em]">LIFT · SAVE {f.saveKg.toFixed(2)}</span>
+            <span className="tracking-[0.12em]">松油 · 节省 {f.saveKg.toFixed(2)}</span>
             <span>≈{(f.liftS ?? 0).toFixed(1)}s</span>
           </div>
         ) : (
           <div className="flex h-[30px] items-center justify-between rounded-[12px] bg-[#00E676]/[0.14] px-2.5 font-f1-mono text-[11px] font-extrabold text-[#00E676] tabular-nums">
-            <span className="tracking-[0.12em]">FUEL OK</span>
+            <span className="tracking-[0.12em]">燃油充足</span>
             <span>+{(f.marginKg ?? 0).toFixed(1)} kg</span>
           </div>
         )
@@ -195,7 +195,7 @@ const TyreCorner: React.FC<{ t: CarTelemetry; i: number }> = ({ t, i }) => {
 };
 
 const TyrePage: React.FC<{ t: CarTelemetry }> = ({ t }) => (
-  <div className="grid h-full grid-cols-2 grid-rows-2 gap-1.5" aria-label="Tyres and brakes">
+  <div className="grid h-full grid-cols-2 grid-rows-2 gap-1.5" aria-label="轮胎与刹车">
     {[0, 1, 2, 3].map((i) => (
       <TyreCorner key={i} t={t} i={i} />
     ))}
@@ -215,7 +215,7 @@ const StandingsPage: React.FC<{ t: CarTelemetry; laps: LapRecord[] }> = ({ t, la
     const from = Math.max(0, Math.min(standings.length - 9, meIdx - 4));
     const shown = standings.slice(from, from + 9);
     return (
-      <table className="w-full font-f1-mono text-[11px] font-extrabold tabular-nums" aria-label="Standings">
+      <table className="w-full font-f1-mono text-[11px] font-extrabold tabular-nums" aria-label="排名">
         <tbody>
           {shown.map((s, k) => {
             const pos = from + k + 1;
@@ -233,7 +233,7 @@ const StandingsPage: React.FC<{ t: CarTelemetry; laps: LapRecord[] }> = ({ t, la
                 <td className="text-right" style={purple ? { color: HUD_PURPLE } : { color: "#C5CBD8" }}>
                   {s.bestLapMs ? formatLapTime(s.bestLapMs) : "—"}
                 </td>
-                <td className="w-[52px] pr-1 text-right">{pos === 1 ? "LEAD" : `+${(s.intervalS ?? s.gapToLeaderS).toFixed(1)}`}</td>
+                <td className="w-[52px] pr-1 text-right">{pos === 1 ? "领先" : `+${(s.intervalS ?? s.gapToLeaderS).toFixed(1)}`}</td>
               </tr>
             );
           })}
@@ -242,14 +242,14 @@ const StandingsPage: React.FC<{ t: CarTelemetry; laps: LapRecord[] }> = ({ t, la
     );
   }
   // Practice: the driver's own laps
-  if (laps.length === 0) return <Empty text="No laps yet" />;
+  if (laps.length === 0) return <Empty text="暂无圈速" />;
   const valid = laps.filter((l) => l.valid);
   const best = valid.reduce<number | null>((m, l) => (m === null || l.timeMs < m ? l.timeMs : m), null);
   const bestS = [0, 1, 2].map((i) =>
     valid.reduce<number | null>((m, l) => (l.sectorsMs[i] > 0 && (m === null || l.sectorsMs[i] < m) ? l.sectorsMs[i] : m), null)
   );
   return (
-    <table className="w-full font-f1-mono text-[11px] font-extrabold tabular-nums" aria-label="Lap times">
+    <table className="w-full font-f1-mono text-[11px] font-extrabold tabular-nums" aria-label="圈速">
       <tbody>
         {laps
           .slice(-9)
@@ -282,6 +282,10 @@ export interface MultiPageMfdProps {
   defaultFolded?: boolean;
   /** Fold back to the pill 3.5 s after the last D-pad press when the D-pad opened it */
   autoFold?: boolean;
+  /** Reports folded state (mount + every change) so the HUD can hide the
+   * driving-keys overlay while the expanded MFD occupies the same right
+   * edge, and bring it back when the MFD folds again */
+  onFoldedChange?: (folded: boolean) => void;
 }
 
 /**
@@ -297,9 +301,18 @@ export const MultiPageMfd: React.FC<MultiPageMfdProps> = ({
   compound,
   defaultFolded = false,
   autoFold = true,
+  onFoldedChange,
 }) => {
   const [page, setPage] = useState<MfdPageId>(readPage);
   const [folded, setFolded] = useState(defaultFolded);
+  // Report through a ref so a fresh inline callback from the parent does not
+  // re-fire this effect on every render; the parent's setState with an
+  // unchanged value is a no-op anyway.
+  const foldedChangeRef = useRef(onFoldedChange);
+  foldedChangeRef.current = onFoldedChange;
+  useEffect(() => {
+    foldedChangeRef.current?.(folded);
+  }, [folded]);
   const laps = useLapHistory(t);
   // Opened by the D-pad (not by the driver asking for the MFD): the auto-fold timer applies
   const padOpened = useRef(false);
@@ -419,7 +432,7 @@ export const MultiPageMfd: React.FC<MultiPageMfdProps> = ({
         <span className="flex items-center gap-2 font-f1-mono text-[10px] font-extrabold tabular-nums">
           {ahead ? <span className="text-[#00E5FF]">▲ {ahead.code} {ahead.gapS.toFixed(1)}</span> : null}
           {behind ? <span className="text-[#FFB300]">▼ {behind.code} {Math.abs(behind.gapS).toFixed(1)}</span> : null}
-          {!ahead && !behind ? <span className="text-[#5B6275]">CLEAR</span> : null}
+          {!ahead && !behind ? <span className="text-[#5B6275]">无车</span> : null}
         </span>
       );
     }
@@ -441,7 +454,7 @@ export const MultiPageMfd: React.FC<MultiPageMfdProps> = ({
     }
     return (
       <span className="font-f1-mono text-[10px] font-extrabold text-[#F5F7FA] tabular-nums">
-        {t.race ? `P${t.race.position}/${t.race.fieldSize}` : `${laps.length} laps`}
+        {t.race ? `P${t.race.position}/${t.race.fieldSize}` : `${laps.length} 圈`}
       </span>
     );
   };
@@ -465,8 +478,8 @@ export const MultiPageMfd: React.FC<MultiPageMfdProps> = ({
               setFolded(false);
             }}
             className="flex h-[26px] w-[26px] shrink-0 cursor-pointer items-center justify-center rounded-full text-[#8E96AA] transition-colors hover:bg-white/10 hover:text-[#CCFF00]"
-            title="Open the MFD"
-            aria-label="Open the MFD"
+            title="打开 MFD"
+            aria-label="打开 MFD"
           >
             <ChevronUp className="h-3.5 w-3.5" strokeWidth={2.6} />
           </button>
@@ -475,7 +488,7 @@ export const MultiPageMfd: React.FC<MultiPageMfdProps> = ({
         <>
           {/* Page strip */}
           <div className="flex items-center gap-1">
-            <div className="flex min-w-0 flex-1 gap-1" role="tablist" aria-label="MFD pages" title="D-pad ◀ ▶ or Ins: next page">
+            <div className="flex min-w-0 flex-1 gap-1" role="tablist" aria-label="MFD 页面" title="方向键 ◀ ▶ 或 Ins：下一页">
               {PAGES.map((p) => (
                 <button
                   key={p.id}
@@ -504,8 +517,8 @@ export const MultiPageMfd: React.FC<MultiPageMfdProps> = ({
                 setFolded(true);
               }}
               className="flex h-[26px] w-[26px] shrink-0 cursor-pointer items-center justify-center rounded-full text-[#8E96AA] transition-colors hover:bg-white/10 hover:text-[#CCFF00]"
-              title="Fold the MFD"
-              aria-label="Fold the MFD"
+              title="收起 MFD"
+              aria-label="收起 MFD"
             >
               <ChevronDown className="h-3.5 w-3.5" strokeWidth={2.6} />
             </button>

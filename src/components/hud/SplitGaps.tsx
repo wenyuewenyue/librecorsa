@@ -19,8 +19,8 @@ const Split: React.FC<{ split: RaceSplit; side: "ahead" | "behind" }> = ({ split
   const color = moving ? (good ? HUD_GREEN : HUD_RED) : "#F5F7FA";
   const sign = side === "ahead" ? "+" : "−";
   return (
-    <span className="flex items-center gap-2" aria-label={`${side === "ahead" ? "Car ahead" : "Car behind"} ${split.driverCode}: ${split.gapS.toFixed(3)} seconds`}>
-      <span className={HUD_LBL}>{side === "ahead" ? "Ahead" : "Behind"}</span>
+    <span className="flex items-center gap-2" aria-label={`${side === "ahead" ? "前方车辆" : "后方车辆"} ${split.driverCode}：${split.gapS.toFixed(3)}秒`}>
+      <span className={HUD_LBL}>{side === "ahead" ? "前方" : "后方"}</span>
       <span className="h-3.5 w-1 shrink-0 rounded-full" style={{ backgroundColor: split.teamColorHex }} />
       <span className="lc-data text-[12px] tracking-[0.1em] text-[#F5F7FA]">{split.driverCode}</span>
       <span className="lc-data min-w-[52px] text-right text-[13px] tabular-nums" style={{ color }}>
@@ -41,7 +41,7 @@ const Split: React.FC<{ split: RaceSplit; side: "ahead" | "behind" }> = ({ split
 export const SplitGaps: React.FC<{ splits: RaceSplits | undefined }> = ({ splits }) => {
   if (!splits || (!splits.ahead && !splits.behind)) return null;
   return (
-    <div className={`inline-flex h-9 items-center gap-3 rounded-full py-1 pr-2 pl-4 ${HUD_GLASS}`} role="status" aria-label="Split gaps">
+    <div className={`inline-flex h-9 items-center gap-3 rounded-full py-1 pr-2 pl-4 ${HUD_GLASS}`} role="status" aria-label="分段差距">
       {splits.ahead ? <Split split={splits.ahead} side="ahead" /> : null}
       {splits.ahead && splits.behind ? <span aria-hidden className="h-4 w-px bg-[#262B3D]" /> : null}
       {splits.behind ? <Split split={splits.behind} side="behind" /> : null}

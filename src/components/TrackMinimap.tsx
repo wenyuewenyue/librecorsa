@@ -7,9 +7,9 @@ import { getTrackInfo } from "@/lib/track-registry";
 import { HUD_CYAN, HUD_GLASS, HUD_LBL, HUD_PINK, HUD_RED, HUD_VOLT, HUD_WELL } from "./hud/hud-format";
 
 const SECTOR_LEGEND = [
-  ["Sector 1", HUD_CYAN],
-  ["Sector 2", HUD_VOLT],
-  ["Sector 3", HUD_PINK],
+  ["第1计时段", HUD_CYAN],
+  ["第2计时段", HUD_VOLT],
+  ["第3计时段", HUD_PINK],
 ] as const;
 
 interface TrackMinimapProps {
@@ -153,7 +153,7 @@ export const TrackMinimap: React.FC<TrackMinimapProps> = ({
 
   return (
     <section
-      aria-label="Circuit map"
+      aria-label="赛道地图"
       className={`flex w-[290px] flex-col rounded-[22px] p-3.5 text-[#F5F7FA] select-none ${HUD_GLASS}`}
     >
       {/* Circuit name, country, length and turns */}
@@ -161,14 +161,14 @@ export const TrackMinimap: React.FC<TrackMinimapProps> = ({
         <div className="min-w-0">
           <div className="lc-title truncate text-[14px] leading-tight">{trackInfo.name}</div>
           <p className={`${HUD_LBL} mt-0.5`}>
-            {trackInfo.country} · {(track.totalLengthM / 1000).toFixed(2)} km · {TURN_METADATA.length} turns
+            {trackInfo.country} · {(track.totalLengthM / 1000).toFixed(2)} km · {TURN_METADATA.length} 个弯
           </p>
         </div>
         <span className="lc-data shrink-0 rounded-full bg-[#CCFF00] px-[7px] py-0.5 text-[9px] text-[#08090D]">GPS</span>
       </div>
 
       {/* Circuit map: sector 1 cyan, sector 2 volt, sector 3 pink */}
-      <svg viewBox="0 0 280 200" className="mt-2 block h-[150px] w-full" role="img" aria-label={`Circuit map${telemetry.currentTurnNumber ? `; you are at turn ${telemetry.currentTurnNumber}` : ""}`}>
+      <svg viewBox="0 0 280 200" className="mt-2 block h-[150px] w-full" role="img" aria-label={`赛道地图${telemetry.currentTurnNumber ? `；你在第${telemetry.currentTurnNumber}号弯` : ""}`}>
         {/* Track ribbon */}
         <path
           d={`${svgData.s1} ${svgData.s2} ${svgData.s3}`}
@@ -262,7 +262,7 @@ export const TrackMinimap: React.FC<TrackMinimapProps> = ({
       {/* Elevation profile */}
       <div className={`mt-2.5 rounded-[14px] p-2.5 ${HUD_WELL}`}>
         <div className="flex items-center justify-between gap-2">
-          <span className={HUD_LBL}>Elevation profile</span>
+          <span className={HUD_LBL}>海拔剖面</span>
           <span className="lc-data text-[12px] text-[#F5F7FA]">
             {telemetry.trackElevationM >= 0 ? "+" : ""}
             {telemetry.trackElevationM.toFixed(1)}m
@@ -270,9 +270,9 @@ export const TrackMinimap: React.FC<TrackMinimapProps> = ({
           </span>
         </div>
         <div className="mt-0.5 flex items-center justify-between">
-          <span className={`${HUD_LBL} !text-[8px]`}>ALT {telemetry.altitudeM.toFixed(0)} M</span>
+          <span className={`${HUD_LBL} !text-[8px]`}>海拔 {telemetry.altitudeM.toFixed(0)} M</span>
           <span className={`${HUD_LBL} !text-[8px]`}>
-            GRADE {telemetry.slopePercent >= 0 ? "+" : ""}
+            坡度 {telemetry.slopePercent >= 0 ? "+" : ""}
             {telemetry.slopePercent.toFixed(1)}%
           </span>
         </div>

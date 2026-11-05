@@ -83,9 +83,9 @@ export const SpeedCluster: React.FC<SpeedClusterProps> = ({
   const aeroOn = (drs && (xMode || drs.drsAvailable)) || (!drs && xMode);
   const aeroBg = xMode ? HUD_CYAN : drs?.drsAvailable ? HUD_VOLT : "#1B1F2B";
   const aeroTextColor = aeroOn ? "#08090D" : HUD_SLATE;
-  const aeroLabel = drs ? (xMode ? "DRS OPEN" : drs.drsAvailable ? "DRS ARMED" : "DRS") : xMode ? "X-MODE" : "Z-MODE";
+  const aeroLabel = drs ? (xMode ? "DRS 已开启" : drs.drsAvailable ? "DRS 待命" : "DRS") : xMode ? "X-MODE" : "Z-MODE";
   const ersColor = boost ? HUD_PURPLE : deploying ? HUD_VOLT : harvesting ? HUD_GREEN : HUD_WHITE;
-  const ersLabel = harvesting ? "Harvest" : deploying ? "Deploy" : "ERS SOC";
+  const ersLabel = harvesting ? "回收" : deploying ? "释放" : "ERS 电量";
 
   const leds = (cls: string, glow: boolean) =>
     LED_INDEXES.map((i) => {
@@ -117,7 +117,7 @@ export const SpeedCluster: React.FC<SpeedClusterProps> = ({
           onClick={onToggleXMode}
           className="lc-data pointer-events-auto cursor-pointer rounded-full px-2.5 py-1 text-[11px] transition-colors"
           style={{ backgroundColor: aeroBg, color: aeroTextColor }}
-          title={drs ? "DRS (X): opens in a DRS zone once its detection point is crossed" : "Active aero (X)"}
+          title={drs ? "DRS（X）：通过检测点后在 DRS 区域内开启" : "主动空力（X）"}
         >
           {aeroLabel}
         </button>
@@ -132,9 +132,9 @@ export const SpeedCluster: React.FC<SpeedClusterProps> = ({
             color: boost ? HUD_WHITE : HUD_SLATE,
             boxShadow: boost ? `0 0 12px ${HUD_PURPLE}66` : "none",
           }}
-          title="Manual override boost (Space / B)"
+          title="手动增压超驰（空格 / B）"
         >
-          OVR BOOST
+          超驰增压
         </button>
       ) : null}
     </>
@@ -149,7 +149,7 @@ export const SpeedCluster: React.FC<SpeedClusterProps> = ({
     </span>
   ) : (
     <span className="flex items-baseline gap-1.5">
-      <span className={HUD_LBL}>Lon G</span>
+      <span className={HUD_LBL}>纵向 G</span>
       <span className="lc-data text-[16px] leading-none text-[#F5F7FA]">
         {telemetry.longitudinalG >= 0 ? "+" : "−"}
         {Math.abs(telemetry.longitudinalG).toFixed(1)}G
@@ -158,15 +158,15 @@ export const SpeedCluster: React.FC<SpeedClusterProps> = ({
   );
 
   const inputBars = (h: string) => (
-    <div className="flex items-end gap-[5px]" aria-label="Brake, throttle, force">
-      <InputBar label="B" pct={telemetry.brake * 100} color={HUD_RED} title="Brake Input" h={h} />
-      <InputBar label="T" pct={telemetry.throttle * 100} color={HUD_GREEN} title="Throttle Input" h={h} />
+    <div className="flex items-end gap-[5px]" aria-label="刹车、油门、力">
+      <InputBar label="B" pct={telemetry.brake * 100} color={HUD_RED} title="刹车输入" h={h} />
+      <InputBar label="T" pct={telemetry.throttle * 100} color={HUD_GREEN} title="油门输入" h={h} />
       <InputBar
         label="F"
         pct={ffbPct}
         color={telemetry.ffbClipping ? HUD_RED : HUD_CYAN}
         labelColor={telemetry.ffbClipping ? HUD_RED : undefined}
-        title="Steering Torque / Force Feedback (Red = Clipping)"
+        title="转向力矩 / 力反馈（红色 = 削波）"
         h={h}
       />
     </div>
@@ -180,12 +180,12 @@ export const SpeedCluster: React.FC<SpeedClusterProps> = ({
         {/* Slim status strip: rev lights, rpm, aero / boost and battery */}
         <div className={`flex items-center gap-2 rounded-full py-1.5 pr-3 pl-2 ${HUD_GLASS}`}>
           {controls}
-          <span className="flex w-[90px] gap-[2px] rounded-full bg-[#050608] p-1" aria-label={`Shift lights: ${Math.max(0, Math.min(REV_LEDS, lit))} of ${REV_LEDS}`}>
+          <span className="flex w-[90px] gap-[2px] rounded-full bg-[#050608] p-1" aria-label={`换挡灯：${Math.max(0, Math.min(REV_LEDS, lit))} / ${REV_LEDS} 亮起`}>
             {leds("h-1.5", false)}
           </span>
           {readout}
         </div>
-        <section aria-label="Speed and gear" className={`flex items-center gap-[18px] rounded-full py-2.5 pr-2.5 pl-6 ${HUD_GLASS}`}>
+        <section aria-label="速度与挡位" className={`flex items-center gap-[18px] rounded-full py-2.5 pr-2.5 pl-6 ${HUD_GLASS}`}>
           {inputBars("h-[52px]")}
           <div className="flex flex-col items-end">
             <span className="lc-data text-[52px] leading-[0.9] tracking-[-0.02em] text-[#F5F7FA]">{speed}</span>
@@ -196,7 +196,7 @@ export const SpeedCluster: React.FC<SpeedClusterProps> = ({
           <span
             className="flex h-[76px] w-[76px] items-center justify-center rounded-full text-[#08090D] transition-colors"
             style={{ backgroundColor: gearRing, boxShadow: flash ? `0 0 18px ${HUD_RED}88` : "none" }}
-            aria-label={`Gear ${gear}`}
+            aria-label={`挡位 ${gear}`}
           >
             <span className="lc-disp text-[52px] leading-none">{gear}</span>
           </span>
@@ -206,7 +206,7 @@ export const SpeedCluster: React.FC<SpeedClusterProps> = ({
   }
 
   return (
-    <section aria-label="Speed cluster" className={`w-[320px] rounded-[22px] px-3.5 py-3 ${HUD_GLASS}`}>
+    <section aria-label="速度仪表组" className={`w-[320px] rounded-[22px] px-3.5 py-3 ${HUD_GLASS}`}>
       {/* Car badge, shift call and rpm */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
@@ -218,7 +218,7 @@ export const SpeedCluster: React.FC<SpeedClusterProps> = ({
           </span>
           {flash ? (
             <span className="lc-data animate-pulse rounded-full bg-[#FF2A3C] px-2 py-0.5 text-[9px] text-[#F5F7FA]">
-              SHIFT
+              升挡
             </span>
           ) : null}
         </div>
@@ -230,7 +230,7 @@ export const SpeedCluster: React.FC<SpeedClusterProps> = ({
       {/* 15-LED shift lights */}
       <div
         className="my-2.5 flex gap-1 rounded-full bg-[#050608] px-2 py-1.5"
-        aria-label={`Shift lights: ${Math.max(0, Math.min(REV_LEDS, lit))} of ${REV_LEDS}`}
+        aria-label={`换挡灯：${Math.max(0, Math.min(REV_LEDS, lit))} / ${REV_LEDS} 亮起`}
       >
         {leds("h-2", true)}
       </div>
@@ -250,14 +250,14 @@ export const SpeedCluster: React.FC<SpeedClusterProps> = ({
           className="flex h-20 w-[70px] flex-none flex-col items-center justify-center rounded-[22px] border-2 bg-[#050608] transition-colors"
           style={{ borderColor: gearRing, boxShadow: flash ? `0 0 14px ${HUD_RED}55` : "none" }}
         >
-          <span className={HUD_LBL}>Gear</span>
+          <span className={HUD_LBL}>挡位</span>
           <span className="lc-data text-[48px] leading-none text-[#F5F7FA]">{gear}</span>
         </div>
 
         {hasErs ? (
           <span
             className="relative h-20 w-2.5 flex-none overflow-hidden rounded-full bg-[#1B1F2B]"
-            title="ERS Battery State of Charge"
+            title="ERS 电池电量"
           >
             <span
               className="absolute inset-x-0 bottom-0 transition-[height]"
@@ -265,7 +265,7 @@ export const SpeedCluster: React.FC<SpeedClusterProps> = ({
             />
           </span>
         ) : (
-          <span className="relative h-20 w-2.5 flex-none overflow-hidden rounded-full bg-[#1B1F2B]" title="Engine RPM Band">
+          <span className="relative h-20 w-2.5 flex-none overflow-hidden rounded-full bg-[#1B1F2B]" title="发动机转速区间">
             <span
               className="absolute inset-x-0 bottom-0"
               style={{

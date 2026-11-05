@@ -58,7 +58,7 @@ const SetupRow: React.FC<{
   // Without a baseline (the electronics' dials), the text follows the way the slider last moved
   const [moved, setMoved] = useState(0);
   const dir = (base === undefined ? moved : Math.sign(value - base)) * (invert ? -1 : 1);
-  const text = fx ? (dir > 0 ? fx.more : dir < 0 ? fx.less : base === undefined ? `▲ ${fx.more}` : "Baseline.") : null;
+  const text = fx ? (dir > 0 ? fx.more : dir < 0 ? fx.less : base === undefined ? `▲ ${fx.more}` : "基准。") : null;
   const change = (v: number) => {
     if (v !== value) setMoved(Math.sign(v - value));
     onChange(v);
@@ -184,7 +184,7 @@ export const EngineersGarage: React.FC<PauseMenuProps> = (p) => {
   };
 
   const savePreset = () => {
-    const label = name.trim() || `Setup ${presets.length + 1}`;
+    const label = name.trim() || `调校 ${presets.length + 1}`;
     const existing = presets.find((x) => x.name.toLowerCase() === label.toLowerCase());
     const preset: GaragePreset = {
       id: existing?.id ?? `${Date.now().toString(36)}`,
@@ -200,7 +200,7 @@ export const EngineersGarage: React.FC<PauseMenuProps> = (p) => {
     const next = [preset, ...presets.filter((x) => x.id !== preset.id)];
     setPresets(next);
     setName("");
-    setNote(saveGaragePresets(p.vehicleModel, next) ? `Saved “${preset.name}”` : "Could not save: storage is blocked");
+    setNote(saveGaragePresets(p.vehicleModel, next) ? `已保存“${preset.name}”` : "无法保存：存储被阻止");
   };
   const loadPreset = (x: GaragePreset) => {
     p.onChangeChassisSetup?.(x.chassis);
@@ -208,7 +208,7 @@ export const EngineersGarage: React.FC<PauseMenuProps> = (p) => {
     p.onChangeTireCompound(x.compound);
     p.onChangeAeroPreset(x.aero);
     p.onChangeLiveTuner?.(x.tuner);
-    setNote(`Loaded “${x.name}”`);
+    setNote(`已加载“${x.name}”`);
   };
   const deletePreset = (x: GaragePreset) => {
     const next = presets.filter((y) => y.id !== x.id);
@@ -219,7 +219,7 @@ export const EngineersGarage: React.FC<PauseMenuProps> = (p) => {
     p.onChangeChassisSetup?.({ ...DEFAULT_CHASSIS_SETUP });
     p.onChangeTyreSetup(p.defaultTyreSetup);
     p.onChangeAeroPreset("balanced");
-    setNote("Back to the baseline setup");
+    setNote("已恢复基准调校");
   };
 
   const changedIn = (g: SetupGroup) => g.params.filter((q) => isChanged(q, st)).length;
@@ -251,9 +251,9 @@ export const EngineersGarage: React.FC<PauseMenuProps> = (p) => {
           active={p.aeroPreset}
           onPick={(id) => p.onChangeAeroPreset(id as typeof p.aeroPreset)}
           items={[
-            { id: "low_downforce", label: "Low DF" },
-            { id: "balanced", label: "Balanced" },
-            { id: "high_downforce", label: "High DF" },
+            { id: "low_downforce", label: "低下压力" },
+            { id: "balanced", label: "均衡" },
+            { id: "high_downforce", label: "高下压力" },
           ]}
         />
       );
@@ -264,9 +264,9 @@ export const EngineersGarage: React.FC<PauseMenuProps> = (p) => {
           active={p.assistPreset}
           onPick={(id) => p.onChangeAssistPreset(id as typeof p.assistPreset)}
           items={[
-            { id: "pro", label: "Assists off" },
+            { id: "pro", label: "关闭辅助" },
             { id: "semi_pro", label: "TC + ABS" },
-            { id: "assisted", label: "Full" },
+            { id: "assisted", label: "完整" },
           ]}
         />
       );
@@ -278,7 +278,7 @@ export const EngineersGarage: React.FC<PauseMenuProps> = (p) => {
       {/* Car and presets */}
       <div className="flex flex-col gap-3">
         <CarPicker carId={p.carId} onChangeCar={p.onChangeCar} compact />
-        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Livery">
+        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="涂装">
           {LIVERIES.map((liv) => {
             const active = p.selectedLivery.id === liv.id;
             return (
@@ -296,35 +296,35 @@ export const EngineersGarage: React.FC<PauseMenuProps> = (p) => {
           })}
         </div>
         <div className="flex flex-wrap items-center gap-2 rounded-[18px] border border-[#262B3D] bg-[#08090D]/55 p-2">
-          <span className="px-1.5 font-f1-mono text-[10px] font-extrabold tracking-[0.14em] text-[#8E96AA] uppercase">Presets</span>
+          <span className="px-1.5 font-f1-mono text-[10px] font-extrabold tracking-[0.14em] text-[#8E96AA] uppercase">预设</span>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter") savePreset();
             }}
-            placeholder="Name this setup"
+            placeholder="为这套调校命名"
             maxLength={32}
             className="h-[30px] min-w-0 flex-1 rounded-full border border-[#262B3D] bg-[#050608] px-3 text-[13px] text-[#F5F7FA] outline-none placeholder:text-[#5B6275] focus:border-[#CCFF00]"
           />
           <SmallButton tone="volt" onClick={savePreset}>
-            Save
+            保存
           </SmallButton>
-          <SmallButton onClick={resetAll} title="Every chassis setting, tyre pressure and camber back to the car's baseline">
-            Baseline
+          <SmallButton onClick={resetAll} title="所有底盘设置、胎压和外倾角恢复为赛车基准">
+            基准
           </SmallButton>
           {note ? <span className="font-f1-mono text-[10px] font-extrabold tracking-[0.08em] text-[#CCFF00]">{note}</span> : null}
           {presets.length > 0 ? (
             <div className="flex w-full flex-wrap gap-1.5">
               {presets.map((x) => (
                 <span key={x.id} className="inline-flex items-center gap-1 rounded-full border border-[#262B3D] bg-[#11131A] py-0.5 pr-0.5 pl-3">
-                  <button type="button" onClick={() => loadPreset(x)} className="cursor-pointer text-[12px] font-bold text-[#F5F7FA] hover:text-[#CCFF00]" title={`Load ${x.name}`}>
+                  <button type="button" onClick={() => loadPreset(x)} className="cursor-pointer text-[12px] font-bold text-[#F5F7FA] hover:text-[#CCFF00]" title={`加载 ${x.name}`}>
                     {x.name}
                   </button>
                   <button
                     type="button"
                     onClick={() => deletePreset(x)}
-                    aria-label={`Delete ${x.name}`}
+                    aria-label={`删除 ${x.name}`}
                     className="inline-flex h-6 w-6 cursor-pointer items-center justify-center rounded-full text-[#5B6275] hover:bg-white/10 hover:text-[#FF2A3C]"
                   >
                     ×
@@ -338,7 +338,7 @@ export const EngineersGarage: React.FC<PauseMenuProps> = (p) => {
 
 
       {/* Sheet pages */}
-      <div role="tablist" aria-label="Setup" className="flex gap-0.5 overflow-x-auto rounded-full border border-[#262B3D] bg-[#08090D] p-1">
+      <div role="tablist" aria-label="调校" className="flex gap-0.5 overflow-x-auto rounded-full border border-[#262B3D] bg-[#08090D] p-1">
         {sheet.map((g) => {
           const n = changedIn(g);
           return (
@@ -354,7 +354,7 @@ export const EngineersGarage: React.FC<PauseMenuProps> = (p) => {
             >
               <span className="hidden xl:inline">{g.label}</span>
               <span className="xl:hidden">{g.short}</span>
-              {n ? <span aria-label={`${n} changed`} className={`h-1.5 w-1.5 rounded-full ${group.id === g.id ? "bg-[#08090D]" : "bg-[#CCFF00]"}`} /> : null}
+              {n ? <span aria-label={`${n} 项已改`} className={`h-1.5 w-1.5 rounded-full ${group.id === g.id ? "bg-[#08090D]" : "bg-[#CCFF00]"}`} /> : null}
             </button>
           );
         })}
@@ -365,8 +365,8 @@ export const EngineersGarage: React.FC<PauseMenuProps> = (p) => {
           title={group.label}
           aside={
             groupChanged ? (
-              <SmallButton onClick={() => resetGroup(group)} title="This page back to the car's baseline">
-                Reset · {groupChanged}
+              <SmallButton onClick={() => resetGroup(group)} title="本页恢复为赛车基准">
+                重置 · {groupChanged}
               </SmallButton>
             ) : null
           }
@@ -392,7 +392,7 @@ export const EngineersGarage: React.FC<PauseMenuProps> = (p) => {
           </div>
         </Card>
         {live ? (
-          <Card title="Current tyres & brakes" color="#00E5FF">
+          <Card title="当前轮胎与刹车" color="#00E5FF">
             <TyreBrakeGrid t={p.telemetry} compound={p.tireCompound} dense />
           </Card>
         ) : null}

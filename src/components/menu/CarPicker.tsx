@@ -24,7 +24,7 @@ export const CarPicker: React.FC<{ carId: CarId; onChangeCar: (car: CarId) => vo
 
   return (
     <div className="flex flex-col gap-2.5">
-      <div role="tablist" aria-label="Car class" className="flex gap-0.5 overflow-x-auto rounded-full border border-[#262B3D] bg-[#08090D] p-1">
+      <div role="tablist" aria-label="赛车组别" className="flex gap-0.5 overflow-x-auto rounded-full border border-[#262B3D] bg-[#08090D] p-1">
         {carClassesInUse().map((k) => {
           const selected = k.id === classId;
           return (
@@ -42,7 +42,7 @@ export const CarPicker: React.FC<{ carId: CarId; onChangeCar: (car: CarId) => vo
             >
               {k.title}
               {k.id === current.classId && !selected ? (
-                <span aria-label="Current car's class" className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: k.color }} />
+                <span aria-label="当前赛车的组别" className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: k.color }} />
               ) : null}
             </button>
           );

@@ -23,7 +23,7 @@ const Pips: React.FC<{ n: number; of: number; color: string; empty: string }> = 
 
 /**
  * Top-centre race-control banner for the judged track limits: the excursion under review, what is still to give
- * back, then the decision (warning n/3, a time penalty, lap deleted, advantage given back or no further action).
+ * back, then the decision (warning n/3, a time penalty, advantage given back or no further action).
  */
 export const RaceControlBanner: React.FC<{ status: TrackLimitsStatus | undefined; offTrack: boolean; race: boolean }> = ({
   status,
@@ -44,16 +44,16 @@ export const RaceControlBanner: React.FC<{ status: TrackLimitsStatus | undefined
       >
         <div className="flex items-center justify-between gap-3">
           <span className="font-f1-mono text-[10px] font-extrabold tracking-[0.18em] opacity-70">
-            {giveBackPos !== null ? "RACE CONTROL · ILLEGAL OVERTAKE" : "RACE CONTROL"}
+            {giveBackPos !== null ? "赛事控制 · 非法超车" : "赛事控制"}
           </span>
           <span className="lc-data text-[12px] tabular-nums">{pending.remainingS.toFixed(1)}s</span>
         </div>
         <span className="lc-disp text-[19px] leading-none whitespace-nowrap">
           {giveBackPos !== null
-            ? `Hand back position · drop to P${giveBackPos}`
+            ? `交还位置 · 退至 P${giveBackPos}`
             : gain !== null
-              ? `Give back ${gain.toFixed(2)}s`
-              : "Lift to give the advantage back"}
+              ? `交还 ${gain.toFixed(2)}s`
+              : "松油门交还优势"}
         </span>
         <span className="relative h-1.5 w-full overflow-hidden rounded-full bg-[#08090D]/20">
           <span
@@ -101,9 +101,9 @@ export const RaceControlBanner: React.FC<{ status: TrackLimitsStatus | undefined
             <path d="M12 8v5M12 16.5h.01" />
           </svg>
         </span>
-        <span className="lc-disp text-[16px] whitespace-nowrap sm:text-[18px]">Track limits</span>
+        <span className="lc-disp text-[16px] whitespace-nowrap sm:text-[18px]">赛道限制</span>
         <span className="font-f1-mono text-[10px] font-extrabold tracking-[0.14em] text-[#FFB300] uppercase">
-          {offTrack ? "Off track" : "Under review"}
+          {offTrack ? "超出赛道" : "审查中"}
         </span>
         {race && status ? <Pips n={status.warnings} of={status.strikesPerPenalty} color={HUD_YELLOW} empty="#262B3D" /> : null}
       </div>

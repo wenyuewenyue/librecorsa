@@ -65,11 +65,11 @@ export const WheelDash: React.FC<Pick<HudDesignProps, "t" | "deltaS" | "revRange
 
   return (
     <section
-      aria-label="Wheel dash"
+      aria-label="方向盘仪表"
       className="@container rounded-[96px_96px_24px_24px/48px_48px_24px_24px] border border-[#2C3246] bg-gradient-to-b from-[#171A25] to-[#07080B] px-3 pt-2.5 pb-2.5 shadow-[0_24px_60px_rgba(0,0,0,0.75),inset_0_1px_0_rgba(255,255,255,0.08)]"
     >
       {/* Shift lights */}
-      <svg viewBox="160 0 320 52" className="mx-auto mb-1 block h-auto w-[40%]" aria-label={`Shift lights: ${shift ? LEDS : lit} of ${LEDS} lit`}>
+      <svg viewBox="160 0 320 52" className="mx-auto mb-1 block h-auto w-[40%]" aria-label={`换挡灯：${shift ? LEDS : lit} / ${LEDS} 亮起`}>
         {LED_ARC.map(([x, y], i) => {
           const on = shift ? blink : i < lit;
           return <circle key={i} cx={x} cy={y} r={7.5} fill={on ? (shift ? "#B845FF" : LED_COLORS[i]) : "#1B1F2B"} />;
@@ -79,31 +79,31 @@ export const WheelDash: React.FC<Pick<HudDesignProps, "t" | "deltaS" | "revRange
       {/* Screen */}
       <div className="grid grid-cols-[1fr_112px_1fr] gap-1.5 rounded-[18px] border border-[#1B1F2B] bg-black p-1.5 @max-[600px]:grid-cols-[1fr_92px_1fr]">
         <div className="grid grid-rows-[1fr_auto] gap-1.5">
-          <Cell label="Speed">
+          <Cell label="速度">
             <span className="flex items-end justify-between gap-2">
               <PedalBars t={t} size="compact" showClutch={false} />
               <span className="lc-data text-[32px] leading-none text-[#F5F7FA] @max-[600px]:text-[28px]">{Math.round(t.speedKmh)}</span>
             </span>
           </Cell>
           {hasErs ? (
-            <Cell label="ERS · battery" tone="#00E5FF">
+            <Cell label="ERS · 电池" tone="#00E5FF">
               <span className="lc-data flex items-center gap-2 text-[12px] @max-[600px]:text-[11px]">
                 <span className="text-[#F5F7FA]">{Math.round(t.ersBatteryPercent)}%</span>
                 <Bar pct={t.ersBatteryPercent} color="#00E5FF" className="h-1.5 flex-1" />
                 <span style={{ color: t.mgukPowerKw > 0 ? "#00E5FF" : t.mgukPowerKw < 0 ? "#00E676" : "#8E96AA" }}>
-                  {t.mgukPowerKw > 0 ? "DEP" : t.mgukPowerKw < 0 ? "HRV" : "—"}
+                  {t.mgukPowerKw > 0 ? "释放" : t.mgukPowerKw < 0 ? "回收" : "—"}
                 </span>
               </span>
             </Cell>
           ) : (
-            <Cell label="Top speed">
+            <Cell label="最高速度">
               <span className="lc-data self-end text-[14px] text-[#F5F7FA]">{Math.round(t.topSpeedThisLapKmh)}</span>
             </Cell>
           )}
         </div>
 
         <div className="flex flex-col items-center justify-between rounded-[14px] border border-[#1B1F2B] bg-[#050608] py-1.5">
-          <span className={HUD_LBL}>Gear</span>
+          <span className={HUD_LBL}>挡位</span>
           <span className="lc-data text-[68px] leading-[0.9] @max-[600px]:text-[58px]" style={{ color: shift ? "#B845FF" : "#F5F7FA", textShadow: shift ? "0 0 18px #B845FF" : "none" }}>
             {gearLabel(t.gear)}
           </span>
@@ -121,14 +121,14 @@ export const WheelDash: React.FC<Pick<HudDesignProps, "t" | "deltaS" | "revRange
         </div>
 
         <div className="grid grid-rows-[1fr_auto] gap-1.5">
-          <Cell label="Delta" tone={deltaColor(deltaS)}>
+          <Cell label="差距" tone={deltaColor(deltaS)}>
             <span className="lc-data self-end text-[32px] leading-none @max-[600px]:text-[28px]" style={{ color: deltaColor(deltaS) }}>
               {deltaS === null ? "--.---" : formatDelta(deltaS)}
             </span>
           </Cell>
           <div className="grid grid-cols-2 gap-1.5">
             <Cell
-              label={flash ? (flash.sector ? `S${flash.sector}` : "Lap") : "Lap time"}
+              label={flash ? (flash.sector ? `分段${flash.sector}` : "圈") : "圈速"}
               tone={flash?.color}
               style={flash ? { borderColor: `${flash.color}80`, backgroundColor: `${flash.color}14` } : undefined}
             >
@@ -139,14 +139,14 @@ export const WheelDash: React.FC<Pick<HudDesignProps, "t" | "deltaS" | "revRange
             <div className="flex min-w-0 flex-col justify-center gap-1 rounded-[12px] border border-[#1B1F2B] bg-[#050608] px-2.5 py-1.5 @max-[600px]:px-2">
               <span className="flex items-baseline justify-between gap-2">
                 <span className={HUD_LBL} style={{ color: "#B845FF" }}>
-                  Best
+                  最佳
                 </span>
                 <span className="lc-data text-[12px] whitespace-nowrap text-[#F5F7FA] @max-[600px]:text-[11px]">{formatLapTime(t.bestLapTimeMs)}</span>
               </span>
               <span className="flex items-baseline justify-between gap-2">
-                <span className={HUD_LBL}>{nb ? "Gap ▲" : "Last"}</span>
+                <span className={HUD_LBL}>{nb ? "差距 ▲" : "上一圈"}</span>
                 <span className="lc-data text-[12px] whitespace-nowrap text-[#F5F7FA] @max-[600px]:text-[11px]">
-                  {nb ? (nb.ahead ? nb.ahead.gap.toFixed(2) : "LEAD") : formatLapTime(t.lastLapTimeMs)}
+                  {nb ? (nb.ahead ? nb.ahead.gap.toFixed(2) : "领先") : formatLapTime(t.lastLapTimeMs)}
                 </span>
               </span>
             </div>
@@ -163,7 +163,7 @@ export const WheelDash: React.FC<Pick<HudDesignProps, "t" | "deltaS" | "revRange
         </div>
         {t.fuelKg > 0 ? (
           <div className="flex items-center gap-1.5 rounded-[10px] border border-[#1B1F2B] bg-[#050608] px-2">
-            <span className={HUD_LBL}>Fuel</span>
+            <span className={HUD_LBL}>燃油</span>
             <span className="lc-data text-[12px] text-[#F5F7FA]">{t.fuelKg.toFixed(1)}kg</span>
           </div>
         ) : null}
@@ -180,10 +180,10 @@ export const PositionTag: React.FC<{ t: HudDesignProps["t"] }> = ({ t }) => {
       {race ? (
         <span className="lc-data flex h-9 items-center rounded-full bg-[#CCFF00] px-3 text-[18px] text-[#08090D]">P{race.position}</span>
       ) : (
-        <span className="flex h-9 items-center rounded-full bg-[#1B1F2B] px-3 text-[10px] font-extrabold tracking-[0.14em] text-[#8E96AA]">PRACTICE</span>
+        <span className="flex h-9 items-center rounded-full bg-[#1B1F2B] px-3 text-[10px] font-extrabold tracking-[0.14em] text-[#8E96AA]">练习</span>
       )}
       <span className="flex flex-col leading-[1.05]">
-        <span className={HUD_LBL}>Lap</span>
+        <span className={HUD_LBL}>圈</span>
         <span className="lc-data text-[18px] text-[#F5F7FA]">
           {race ? `${race.lap}${race.totalLaps ? `/${race.totalLaps}` : ""}` : Math.max(1, t.lapCount)}
         </span>

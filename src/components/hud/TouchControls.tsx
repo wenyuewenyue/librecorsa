@@ -71,10 +71,17 @@ const SteerPad: React.FC<SteerPadProps> = ({ value, onChange }) => {
 
   const down = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
-    if (pid.current !== null) return;
+    // Take over even if a previous pointer never released: a missed pointerup
+    // (e.g. an iOS system gesture interrupting the touch) used to leave pid set
+    // forever, so every later touch on this pad was ignored and the knob went
+    // dead until the overlay remounted (opening/closing the pause menu).
     pid.current = e.pointerId;
     origin.current = e.clientX;
-    e.currentTarget.setPointerCapture(e.pointerId);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* capture is best-effort on some browsers */
+    }
     onChange(0);
   };
   const move = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -95,7 +102,7 @@ const SteerPad: React.FC<SteerPadProps> = ({ value, onChange }) => {
   return (
     <div
       role="slider"
-      aria-label="Steering"
+      aria-label="转向"
       aria-valuemin={-100}
       aria-valuemax={100}
       aria-valuenow={Math.round(value * 100)}
@@ -108,7 +115,7 @@ const SteerPad: React.FC<SteerPadProps> = ({ value, onChange }) => {
       onLostPointerCapture={release}
     >
       <div className="pointer-events-none flex items-center justify-between">
-        <span className={LABEL}>Steer</span>
+        <span className={LABEL}>转向</span>
         <span className="font-f1-mono text-[14px] font-extrabold tabular-nums" style={{ color: HUD_VOLT }}>
           {Math.round(value * 100)}
         </span>
@@ -153,11 +160,11 @@ interface TiltIndicatorProps {
 }
 
 const TILT_LABEL: Record<TiltStatus, string> = {
-  off: "TILT: TAP TO ENABLE",
-  asking: "TILT: ASKING",
-  ready: "TILT",
-  denied: "TILT DENIED",
-  unsupported: "NO TILT SENSOR",
+  off: "倾斜：轻触启用",
+  asking: "倾斜：请求中",
+  ready: "倾斜",
+  denied: "倾斜被拒绝",
+  unsupported: "无倾斜传感器",
 };
 
 /** Tilt-steer readout with a Recentre button that stores the current tilt as the zero offset */
@@ -185,12 +192,12 @@ const TiltIndicator: React.FC<TiltIndicatorProps> = ({ value, status, onRecentre
       </div>
       <button
         type="button"
-        aria-label="Recentre tilt"
+        aria-label="倾斜回正"
         className="pointer-events-auto touch-none h-11 rounded-full border border-[#262B3D] bg-[#11131A] text-[14px] font-bold active:scale-95 short:h-9"
         style={{ color: HUD_WHITE, touchAction: "none" }}
         onPointerDown={onRecentre}
       >
-        Recentre
+        回正
       </button>
     </div>
   );
@@ -220,9 +227,14 @@ const Pedal: React.FC<PedalProps> = ({ label, color, value, onChange }) => {
   };
   const down = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
-    if (pid.current !== null) return;
+    // Same takeover as the steering pad: a missed pointerup must not leave
+    // this pedal permanently dead until the overlay remounts.
     pid.current = e.pointerId;
-    e.currentTarget.setPointerCapture(e.pointerId);
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* capture is best-effort on some browsers */
+    }
     onChange(measure(e));
   };
   const move = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -451,8 +463,8 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
         className="absolute flex gap-2"
         style={{ top: edge("top", 12), left: edge("left", 16) }}
       >
-        <TapButton label="Menu" color={HUD_SLATE} small onTap={onPause} />
-        <TapButton label="Cam" color={HUD_SLATE} small onTap={onCycleCamera} />
+        <TapButton label="菜单" color={HUD_SLATE} small onTap={onPause} />
+        <TapButton label="视角" color={HUD_SLATE} small onTap={onCycleCamera} />
       </div>
 
       {/* Bottom-left: steering */}
@@ -472,7 +484,7 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
         <div className="flex gap-2">
           <TapButton
             label="▲"
-            ariaLabel="Shift up"
+            ariaLabel="升挡"
             color={HUD_VOLT}
             icon={<ShiftArrow up />}
             onTap={() => {
@@ -481,7 +493,7 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
           />
           <TapButton
             label="▼"
-            ariaLabel="Shift down"
+            ariaLabel="降挡"
             color={HUD_VOLT}
             icon={<ShiftArrow />}
             onTap={() => {
@@ -489,7 +501,7 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
             }}
           />
           <TapButton
-            label="BOOST"
+            label="增压"
             color={HUD_PURPLE}
             textColor="#D99BFF"
             wide
@@ -499,7 +511,7 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
           />
           <TapButton
             label="X/Z"
-            ariaLabel="Active aero"
+            ariaLabel="主动空力"
             color={HUD_CYAN}
             onTap={() => {
               touchInput.aero = true;
@@ -507,8 +519,8 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
           />
         </div>
         <div className="flex gap-3 short:gap-2">
-          <Pedal label="BRAKE" color={HUD_RED} value={vis.brake} onChange={setBrake} />
-          <Pedal label="THROTTLE" color={HUD_GREEN} value={vis.throttle} onChange={setThrottle} />
+          <Pedal label="刹车" color={HUD_RED} value={vis.brake} onChange={setBrake} />
+          <Pedal label="油门" color={HUD_GREEN} value={vis.throttle} onChange={setThrottle} />
         </div>
       </div>
     </div>

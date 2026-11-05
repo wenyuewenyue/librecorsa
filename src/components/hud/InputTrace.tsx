@@ -198,11 +198,11 @@ export const InputTrace: React.FC<InputTraceProps> = ({ sample, seconds = 5, wid
   }, [seconds, width, hasAside]);
 
   return (
-    <section aria-label="Inputs" className={`inline-flex flex-col gap-1.5 rounded-[18px] px-3 pt-2 pb-2.5 ${HUD_GLASS}`}>
+    <section aria-label="输入" className={`inline-flex flex-col gap-1.5 rounded-[18px] px-3 pt-2 pb-2.5 ${HUD_GLASS}`}>
       <div className="flex items-center justify-between">
         <span className="lc-data inline-flex items-center gap-2 text-[10px] tracking-[0.12em] text-[#F5F7FA]">
           <span className="h-1.5 w-1.5 rounded-full bg-[#CCFF00]" />
-          INPUTS
+          输入
         </span>
         <span className="flex items-center gap-2 font-f1-mono text-[9px] font-extrabold tracking-[0.12em]">
           <span style={{ color: HUD_GREEN }}>THR</span>
@@ -214,7 +214,7 @@ export const InputTrace: React.FC<InputTraceProps> = ({ sample, seconds = 5, wid
         <canvas
           ref={canvasRef}
           role="img"
-          aria-label="Throttle, brake and steering trace"
+          aria-label="油门、刹车和转向轨迹"
           className="block rounded-[8px]"
           style={{ width, height: HEIGHT }}
         />

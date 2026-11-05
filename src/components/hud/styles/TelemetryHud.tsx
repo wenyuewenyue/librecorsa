@@ -19,11 +19,11 @@ const LapAnalysis: React.FC<{ t: CarTelemetry }> = ({ t }) => {
   const bests = t.bestSectorTimesMs;
   const ideal = bests.every((b) => b) ? bests.reduce<number>((a, b) => a + (b ?? 0), 0) : null;
   return (
-    <section aria-label="Lap analysis" className={CARD}>
+    <section aria-label="圈速分析" className={CARD}>
       <div className="grid grid-cols-[24px_1fr_1fr] items-baseline gap-x-2 gap-y-1 font-f1-mono">
-        <span className={LABEL}>S</span>
-        <span className={`${LABEL} text-right`}>This lap</span>
-        <span className={`${LABEL} text-right`}>Best</span>
+        <span className={LABEL}>分段</span>
+        <span className={`${LABEL} text-right`}>本圈</span>
+        <span className={`${LABEL} text-right`}>最佳</span>
         {[0, 1, 2].map((i) => {
           const done = i + 1 < t.currentSector;
           const ms = t.sectorTimesMs[i];
@@ -40,13 +40,13 @@ const LapAnalysis: React.FC<{ t: CarTelemetry }> = ({ t }) => {
       </div>
       <div className="mt-2 grid grid-cols-2 gap-1.5 border-t border-[#262B3D] pt-2">
         <div>
-          <div className={LABEL}>Ideal lap</div>
+          <div className={LABEL}>理想圈速</div>
           <div className="lc-data text-[12px]" style={{ color: HUD_PURPLE }}>
             {formatLapTime(ideal)}
           </div>
         </div>
         <div className="text-right">
-          <div className={LABEL}>Top speed</div>
+          <div className={LABEL}>最高速度</div>
           <div className="lc-data text-[12px] text-[#F5F7FA]">
             {Math.round(t.topSpeedThisLapKmh)} <span className="text-[#8E96AA]">/ {Math.round(t.allTimeTopSpeedKmh)}</span>
           </div>
@@ -72,7 +72,7 @@ const GPowerCard: React.FC<{ t: CarTelemetry }> = ({ t }) => {
   const y = Math.max(-1, Math.min(1, -t.longitudinalG / 5)) * 44;
   const hasErs = t.f12026?.hasErs ?? true;
   return (
-    <section aria-label="G-meter and power" className={`flex items-center gap-3 ${CARD}`}>
+    <section aria-label="G 值与动力" className={`flex items-center gap-3 ${CARD}`}>
       <svg viewBox="-50 -50 100 100" className="h-[72px] w-[72px] shrink-0" aria-hidden>
         <circle r={48} fill="#050608" stroke="#262B3D" />
         {[16, 32].map((r) => (
@@ -83,10 +83,10 @@ const GPowerCard: React.FC<{ t: CarTelemetry }> = ({ t }) => {
         <circle cx={x} cy={y} r={6} fill="#CCFF00" style={{ filter: "drop-shadow(0 0 4px #CCFF00)" }} />
       </svg>
       <div className="grid flex-1 gap-0.5">
-        <Row label="Lateral" value={`${Math.abs(t.lateralG).toFixed(1)}g`} />
-        <Row label="Long" value={`${Math.abs(t.longitudinalG).toFixed(1)}g`} />
-        <Row label="DF" value={`${Math.round(t.downforceKgf)}kg`} />
-        <Row label="Power" value={`${Math.round(t.totalPowerKw)} kW`} className="mt-1 border-t border-[#262B3D] pt-1" />
+        <Row label="横向" value={`${Math.abs(t.lateralG).toFixed(1)}g`} />
+        <Row label="纵向" value={`${Math.abs(t.longitudinalG).toFixed(1)}g`} />
+        <Row label="下压力" value={`${Math.round(t.downforceKgf)}kg`} />
+        <Row label="动力" value={`${Math.round(t.totalPowerKw)} kW`} className="mt-1 border-t border-[#262B3D] pt-1" />
         {hasErs ? (
           <Row
             label="MGU-K"
@@ -94,15 +94,15 @@ const GPowerCard: React.FC<{ t: CarTelemetry }> = ({ t }) => {
             color={t.mgukPowerKw > 0 ? "#00E5FF" : t.mgukPowerKw < 0 ? "#00E676" : undefined}
           />
         ) : null}
-        <Row label="Drag" value={`${(t.dragN / 1000).toFixed(1)} kN`} />
-        {t.fuelKg > 0 ? <Row label="Fuel" value={`${t.fuelKg.toFixed(1)} kg`} /> : null}
+        <Row label="阻力" value={`${(t.dragN / 1000).toFixed(1)} kN`} />
+        {t.fuelKg > 0 ? <Row label="燃油" value={`${t.fuelKg.toFixed(1)} kg`} /> : null}
       </div>
     </section>
   );
 };
 
 const TyreDetail: React.FC<{ t: CarTelemetry; compound: TireCompound }> = ({ t, compound }) => (
-  <section aria-label="Tyres" className={CARD}>
+  <section aria-label="轮胎" className={CARD}>
     <TyreBrakeGrid t={t} compound={compound} dense />
   </section>
 );

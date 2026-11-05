@@ -11,25 +11,28 @@ import { LeaderboardPanel } from "@/components/hud/LeaderboardPanel";
 import { buildHudMap, mapPoint, SECTOR_COLORS, type HudMap } from "@/components/hud/styles/hud-style-parts";
 import { ACTIVE_TRACK_ID, BASE_ALTITUDE_M, getTrackData, TRACK_TOTAL_LENGTH_M, TURN_METADATA } from "@/lib/track-data";
 import { getTrackInfo, RWANDA_TRACK_ID, TRACKS, type TrackInfo } from "@/lib/track-registry";
+import { usePreloadStatus } from "@/lib/loading/resource-preloader";
 import { isLikelyWheel, padDisplayName } from "@/lib/input/device-input";
 import type { HudPreset } from "@/lib/settings/player-settings";
 import { useGamepads, type PadState } from "./useMenuNav";
 import { focusInZone, focusOnHover, useFocusNav } from "./useFocusNav";
 import { useInputMode } from "./input-mode";
 import { KeyCap, PadGlyph, PromptBar } from "./menu-ui";
-import { RequestPanel } from "./RequestPanel";
 import { ConditionsPanel, type ConditionsPanelProps } from "./ConditionsPanel";
 import { TIME_OF_DAY_LABELS, WEATHER_LABELS } from "@/lib/sim/weather";
 import { LibreCorsaLogo } from "@/components/ui/LibreCorsaLogo";
+import { isBuffCode } from "@/lib/sim/buff-pack";
+import { isRulesGateDismissed, RulesGateDialog, RulesPage, type RulesGateMode } from "./RulesContent";
+import { ChangelogPage } from "./ChangelogContent";
+import { CURRENT_VERSION } from "../../lib/changelog";
 import { AI_SKILL_DEFAULT, aiSkillLabel } from "@/lib/sim/ai-tuning";
 import {
   CloudSun,
-  ExternalLink,
   Flag,
   Gamepad2,
+  Gift,
   Info,
   Keyboard,
-  MessageSquarePlus,
   MonitorCog,
   Play,
   Route,
@@ -39,13 +42,19 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-type TitlePanel = "circuit" | "conditions" | "garage" | "multiplayer" | "leaderboard" | "display" | "credits" | "request";
+type TitlePanel = "circuit" | "conditions" | "garage" | "multiplayer" | "leaderboard" | "display";
 
 export interface TitleMenuProps extends PauseMenuProps {
   firstRun: boolean;
   onDrive: () => void;
   onRaceAi: () => void;
   onControls: () => void;
+  /** Activation-code buff active for the next run (set from the activation dialog) */
+  buffActive?: boolean;
+  /** Called when the activation code is accepted; the run starts with the buff */
+  onBuffActivated?: () => void;
+  /** Called when the player cancels an active buff for this run */
+  onBuffCleared?: () => void;
   initialPanel?: TitlePanel | null;
   /** Active circuit id */
   trackId?: string;
@@ -55,20 +64,18 @@ export interface TitleMenuProps extends PauseMenuProps {
   conditionsPanel?: ConditionsPanelProps;
 }
 
-const linkClass = "underline decoration-[#00E5FF]/40 underline-offset-2 text-[#00E5FF] hover:text-[#CCFF00]";
-
 const ASSIST_LABELS: Record<PauseMenuProps["assistPreset"], string> = {
-  pro: "No assists",
+  pro: "无辅助",
   semi_pro: "TC + ABS",
-  assisted: "Full assists",
+  assisted: "全部辅助",
 };
 
 const HUD_LABELS: Record<HudPreset, string> = {
-  broadcast: "Broadcast",
-  dash: "Wheel Dash",
-  telemetry: "Telemetry",
-  classic: "Classic",
-  minimal: "Minimal",
+  broadcast: "转播",
+  dash: "方向盘仪表",
+  telemetry: "遥测",
+  classic: "经典",
+  minimal: "极简",
 };
 
 const km = (t: TrackInfo) => (t.lengthM / 1000).toFixed(2);
@@ -120,17 +127,37 @@ const CircuitPanel: React.FC<{ trackId: string; onSelect?: (id: string) => void;
   map,
 }) => {
   const active = getTrackInfo(trackId);
+  const preload = usePreloadStatus();
   const stats: [string, string][] = [
-    ["Length", `${km(active)} km`],
-    ["Turns", String(active.turns)],
-    ["Direction", /counter|anti/i.test(active.direction) ? "CCW" : /clock/i.test(active.direction) ? "CW" : active.direction],
-    ...(map && BASE_ALTITUDE_M > 0 ? [["Altitude", `${Math.round(BASE_ALTITUDE_M).toLocaleString("en-US")} m`] as [string, string]] : []),
+    ["长度", `${km(active)} km`],
+    ["弯道", String(active.turns)],
+    ["方向", /counter|anti/i.test(active.direction) ? "逆时针" : /clock/i.test(active.direction) ? "顺时针" : active.direction],
+    ...(map && BASE_ALTITUDE_M > 0 ? [["海拔", `${Math.round(BASE_ALTITUDE_M).toLocaleString("en-US")} m`] as [string, string]] : []),
   ];
   return (
     <div className="grid grid-cols-[repeat(auto-fit,minmax(min(300px,100%),1fr))] gap-5">
       <div className="flex min-w-0 flex-col gap-2.5">
         {TRACKS.map((t) => {
           const isActive = t.id === trackId;
+          // Preload status as a badge beside each track, not buried in the
+          // small sub-line: every track always shows a state, so a track
+          // that has not started warming is visible as 待预载, not blank.
+          const preloadLabel = isActive
+            ? "已选中"
+            : preload.readyTracks.includes(t.id)
+              ? "已预载"
+              : preload.state === "loading" && preload.current === t.name
+                ? "预载中…"
+                : preload.state === "skipped" || preload.state === "done"
+                  ? "未预载"
+                  : preload.state === "paused"
+                    ? "已暂停"
+                    : "待预载";
+          const preloadBadgeClass = isActive || preload.readyTracks.includes(t.id)
+            ? "bg-[#CCFF00] text-[#08090D]"
+            : preload.state === "loading" && preload.current === t.name
+              ? "bg-[#00E5FF] text-[#08090D]"
+              : "border border-[#262B3D] bg-transparent text-[#8E96AA]";
           return (
             <button
               key={t.id}
@@ -150,7 +177,7 @@ const CircuitPanel: React.FC<{ trackId: string; onSelect?: (id: string) => void;
                   <span className="lc-title text-[18px] leading-[1.1] text-[#F5F7FA]">{t.name}</span>
                   {t.id === RWANDA_TRACK_ID ? (
                     <span className="rounded-full bg-[#CCFF00] px-[7px] py-0.5 font-f1-mono text-[9px] font-extrabold tracking-[0.08em] text-[#08090D]">
-                      ORIGINAL
+                      原创
                     </span>
                   ) : null}
                 </span>
@@ -158,21 +185,40 @@ const CircuitPanel: React.FC<{ trackId: string; onSelect?: (id: string) => void;
                   {t.layout} · {t.city}, {t.country}
                 </span>
                 <span className={`font-f1-mono text-[11px] font-extrabold ${isActive ? "text-[#CCFF00]" : "text-[#8E96AA]"}`}>
-                  {km(t)} KM · {t.turns} TURNS{isActive ? " · ACTIVE" : ""}
+                  {km(t)} KM · {t.turns} 个弯
                 </span>
+              </span>
+              <span
+                className={`shrink-0 rounded-full px-2.5 py-1 font-f1-mono text-[11px] font-extrabold whitespace-nowrap ${preloadBadgeClass}`}
+              >
+                {preloadLabel}
               </span>
             </button>
           );
         })}
+        <p className="m-0 mx-1 font-f1-mono text-[11px] font-extrabold text-[#C5CBD8]">
+          {preload.state === "skipped" && preload.skippedReason
+            ? preload.skippedReason
+            : preload.state === "loading" && preload.current
+              ? `预载中：${preload.current} · ${preload.readyTracks.length} / ${TRACKS.length - 1} 条其他赛道已预载`
+              : preload.state === "loading"
+                ? `预载进行中 · ${preload.readyTracks.length} / ${TRACKS.length - 1} 条其他赛道已预载`
+                : preload.state === "paused"
+                  ? `预载已暂停 · ${preload.readyTracks.length} / ${TRACKS.length - 1} 条其他赛道已预载`
+                  : preload.state === "done"
+                    ? preload.readyTracks.length === 0
+                      ? "预载完成，暂无已预载赛道，切换时按需加载"
+                      : `${preload.readyTracks.length} / ${TRACKS.length - 1} 条其他赛道已预载，切换即时`
+                    : `预载待开始 · ${preload.readyTracks.length} / ${TRACKS.length - 1} 条其他赛道已预载`}
+        </p>
         <p className="m-0 mx-1 mt-1.5 text-[13px] leading-relaxed text-[#8E96AA]">
-          Real-world circuits are converted from community scans (see Credits). Corners, kerbs, run-off and barriers are
-          detected automatically, so details can differ from the real venue.
+          真实赛道由社区扫描转换而来。弯角、路肩、缓冲区和护栏均为自动检测，细节可能与真实场地有所不同。
         </p>
       </div>
 
       <div className="flex min-w-0 flex-col gap-3.5 self-start rounded-[22px] border border-[#262B3D] bg-[#08090D]/60 p-5">
         <div className="flex items-center justify-between gap-3">
-          <span className="lc-lbl">Preview</span>
+          <span className="lc-lbl">预览</span>
           {map ? (
             <span className="flex gap-3">
               {SECTOR_COLORS.map((c, i) => (
@@ -184,7 +230,7 @@ const CircuitPanel: React.FC<{ trackId: string; onSelect?: (id: string) => void;
           ) : null}
         </div>
         {map ? (
-          <TrackOutline map={map} sectors className="h-auto max-h-[340px] w-full" label={`${active.name} layout by sector`} />
+          <TrackOutline map={map} sectors className="h-auto max-h-[340px] w-full" label={`${active.name} 分段布局`} />
         ) : (
           <span className="lc-title text-[18px] leading-tight">{active.name}</span>
         )}
@@ -198,113 +244,16 @@ const CircuitPanel: React.FC<{ trackId: string; onSelect?: (id: string) => void;
         </dl>
         <p className="m-0 flex items-start gap-2.5 text-[13px] leading-normal text-[#C5CBD8]">
           <Info aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-[#00E5FF]" strokeWidth={2} />
-          Switching reloads the scene; multiplayer peers must pick the same circuit.
+          切换赛道会重新加载场景；联机对手必须选择同一条赛道。
         </p>
       </div>
     </div>
   );
 };
 
-const TAKEDOWN_URL = "https://github.com/KhazP/librecorsa/issues/new?template=takedown-request.yml";
-
-const CreditRow: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => (
-  <div className="flex flex-col gap-2 border-t border-[#262B3D] py-4">
-    <span className="lc-title text-[16px] text-[#F5F7FA]">{title}</span>
-    <p className="m-0 text-[14px] leading-relaxed text-[#C5CBD8]">{children}</p>
-  </div>
-);
-
-const Credits: React.FC = () => (
-  <div className="flex flex-col gap-[18px]">
-    <p className="m-0 max-w-[760px] text-[18px] leading-snug font-semibold text-[#F5F7FA] sm:text-[22px]">
-      <span className="text-[#CCFF00]">LibreCorsa</span> is an open-source, multi-class browser racing simulator built for
-      everyone — featuring Formula prototypes, GT3 machinery, and an open circuit pipeline.
-    </p>
-
-    <div className="grid grid-cols-[repeat(auto-fit,minmax(min(320px,100%),1fr))] gap-x-8">
-      <div>
-        <CreditRow title="Physics & dynamics">
-          500 Hz 6-DOF rigid-body solver, Pacejka Magic Formula &amp; normalized-slip tyre models with 9-node thermal
-          dynamics, active aerodynamics, and hybrid ERS.
-        </CreditRow>
-        <CreditRow title="Graphics & audio">
-          WebGL2 PBR rendering with GPU tyre deformation, golden-hour lighting and multi-layer Web Audio synthesis.
-        </CreditRow>
-      </div>
-      <div>
-        <CreditRow title="3D car models">
-          2026 Formula car model (
-          <a href="https://skfb.ly/pKNCK" target="_blank" rel="noreferrer" className={linkClass}>
-            skfb.ly/pKNCK
-          </a>
-          ) by DeX ·{" "}
-          <a href="http://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer" className={linkClass}>
-            CC BY 4.0
-          </a>
-          <br />
-          &ldquo;2020 Mercedes-Benz AMG GT3&rdquo; (
-          <a href="https://skfb.ly/pOTPL" target="_blank" rel="noreferrer" className={linkClass}>
-            skfb.ly/pOTPL
-          </a>
-          ) by Ddiaz Design · CC BY-NC-SA 4.0
-        </CreditRow>
-        {TRACKS.some((t) => t.credit) ? (
-          <CreditRow title="Circuits">
-            {TRACKS.filter((t) => t.credit).map((t) => (
-              <React.Fragment key={t.id}>
-                &ldquo;{t.credit!.title}&rdquo; (
-                <a href={t.credit!.short ?? t.credit!.url} target="_blank" rel="noreferrer" className={linkClass}>
-                  {(t.credit!.short ?? t.credit!.url).replace(/^https?:\/\//, "")}
-                </a>
-                ) by {t.credit!.author} ·{" "}
-                <a href="http://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer" className={linkClass}>
-                  CC BY 4.0
-                </a>
-                <br />
-              </React.Fragment>
-            ))}
-            Converted for the simulator (rescaled, recentred, textures re-encoded, physics colliders added).
-          </CreditRow>
-        ) : null}
-      </div>
-    </div>
-
-    <div className="flex flex-wrap items-center justify-between gap-4 rounded-[20px] border border-[#262B3D] bg-[#08090D]/60 px-4 py-3.5 sm:px-5 sm:py-4">
-      <div className="flex max-w-[600px] min-w-0 flex-col gap-1">
-        <span className="lc-title text-[16px] text-[#F5F7FA]">Rights holders &amp; takedown</span>
-        <p className="m-0 text-[13px] leading-relaxed text-[#C5CBD8]">
-          If you made a model, texture, sound or other asset used here and it is uncredited, credited wrongly, under the
-          wrong license, or not meant to be in LibreCorsa, let us know — it will be fixed or removed, usually within 7 days.
-        </p>
-      </div>
-      <a
-        href={TAKEDOWN_URL}
-        target="_blank"
-        rel="noopener noreferrer"
-        onPointerEnter={focusOnHover}
-        className="inline-flex h-11 shrink-0 items-center gap-2 rounded-full border border-[#00E5FF]/45 bg-[#00E5FF]/10 px-4 text-[14px] font-bold text-[#F5F7FA] no-underline outline-none transition-[background-color,border-color,box-shadow,color] duration-200 hover:border-[#CCFF00] hover:bg-[#CCFF00] hover:text-[#08090D] focus:border-[#CCFF00] focus:bg-[#CCFF00] focus:text-[#08090D] focus:shadow-[0_0_0_5px_rgba(204,255,0,0.12)]"
-      >
-        <span>Rights / takedown request</span>
-        <ExternalLink aria-hidden className="h-4 w-4 shrink-0" strokeWidth={2.2} />
-      </a>
-    </div>
-
-    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#262B3D] pt-3.5">
-      <p className="m-0 max-w-[620px] text-[13px] leading-relaxed text-[#8E96AA]">
-        Built with Next.js, React, Three.js and Tailwind CSS. Source code licensed under MIT; 3D and audio assets are for
-        non-commercial educational use only.
-      </p>
-      <span className="flex gap-[3px]" aria-hidden>
-        <span className="h-[5px] w-[18px] rounded-full bg-[#CCFF00]" />
-        <span className="h-[5px] w-[18px] rounded-full bg-[#00E5FF]" />
-        <span className="h-[5px] w-[18px] rounded-full bg-[#FF2A3C]" />
-      </span>
-    </div>
-  </div>
-);
 
 /**
- * The frosted sheet an open panel sits on, with its heading and a Close button. `.lc-title-frame` lets the
+ * The frosted sheet an open panel sits on, with its heading and a 关闭 button. `.lc-title-frame` lets the
  * shared panels (also shown in the pause menu) switch their cards to the inset look of this sheet.
  */
 const PanelFrame: React.FC<{
@@ -335,7 +284,7 @@ const PanelFrame: React.FC<{
             className="inline-flex h-10 cursor-pointer items-center gap-2 rounded-full border border-[#262B3D] bg-[#08090D]/60 pr-3.5 pl-2 text-[13px] font-bold text-[#C5CBD8] transition-colors hover:border-[#3A4157] hover:text-[#F5F7FA]"
           >
             {mode === "pad" ? <PadGlyph button="b" family={family} /> : <KeyCap>ESC</KeyCap>}
-            Close
+            关闭
           </button>
         </div>
       ) : null}
@@ -445,7 +394,7 @@ const GridEntry: React.FC<{ item: MenuItem }> = ({ item }) => {
   );
 };
 
-/** Lap times / Credits / Request: the quiet text links under the grid */
+/** Lap times: the text link under the grid, sized like the grid entries above it */
 const LinkEntry: React.FC<{ item: MenuItem }> = ({ item }) => {
   const Icon = item.icon;
   return (
@@ -455,11 +404,133 @@ const LinkEntry: React.FC<{ item: MenuItem }> = ({ item }) => {
       onPointerEnter={focusOnHover}
       onClick={item.run}
       aria-expanded={item.panel ? false : undefined}
-      className={`${ENTRY_FOCUS} inline-flex min-h-[44px] items-center gap-2 rounded-full bg-transparent px-3 text-[14px] font-semibold text-[#C5CBD8] hover:bg-white/[0.04] hover:text-[#F5F7FA]`}
+      className={`${ENTRY_FOCUS} inline-flex min-h-[56px] items-center gap-3 rounded-full bg-transparent px-3 text-[#C5CBD8] hover:bg-white/[0.04] hover:text-[#F5F7FA]`}
     >
-      <Icon aria-hidden className={`${ENTRY_ICON} h-4 w-4`} strokeWidth={2} />
-      {item.label}
+      <Icon aria-hidden className={`${ENTRY_ICON} h-5 w-5`} strokeWidth={2} />
+      <span className="flex min-w-0 flex-col">
+        <span className="lc-title text-[18px] leading-[1.1]">{item.label}</span>
+        <span className={`${ENTRY_DETAIL} text-[12px]`}>{item.detail}</span>
+      </span>
     </button>
+  );
+};
+
+/** Gift-box trigger for the activation dialog: a small volt gift icon in the
+ * header flow (no text, no key icon), volt background when the buff is active */
+const GiftButton: React.FC<{ active: boolean; onOpen: () => void }> = ({ active, onOpen }) => (
+  <button
+    type="button"
+    data-rail-id="buff"
+    aria-label="礼物"
+    title="礼物"
+    onClick={onOpen}
+    className={`inline-flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-full border backdrop-blur transition-colors ${
+      active
+        ? "border-[#CCFF00] bg-[#CCFF00] text-[#08090D]"
+        : "border-[#262B3D] bg-[#11131A]/70 text-[#CCFF00] hover:border-[#3A4157]"
+    }`}
+  >
+    <Gift aria-hidden className="h-5 w-5" strokeWidth={2} />
+  </button>
+);
+
+/** Activation-code dialog: a centred input with the run's scope note inside the dialog.
+ * When the buff is already active (reopened, or just activated), it shows a
+ * 取消使用 button that clears the buff for this run instead of only a 确定. */
+const ActivationDialog: React.FC<{
+  open: boolean;
+  active: boolean;
+  onClose: () => void;
+  onActivated: () => void;
+  onCleared: () => void;
+}> = ({ open, active, onClose, onActivated, onCleared }) => {
+  const [code, setCode] = useState("");
+  const [error, setError] = useState(false);
+  const [done, setDone] = useState(false);
+  if (!open) return null;
+  const submit = () => {
+    if (isBuffCode(code)) {
+      setError(false);
+      setDone(true);
+      onActivated();
+    } else {
+      setError(true);
+    }
+  };
+  const close = () => {
+    setCode("");
+    setError(false);
+    setDone(false);
+    onClose();
+  };
+  const cancelUse = () => {
+    onCleared();
+    close();
+  };
+  const showActive = active || done;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4" role="dialog" aria-modal="true" aria-label="激活码">
+      <div className="w-full max-w-[380px] rounded-[20px] border border-[#262B3D] bg-[#11131A] p-5">
+        <div className="mb-1 text-[18px] font-bold text-[#F5F7FA]">激活码</div>
+        <p className="mb-4 text-[12px] leading-[1.5] text-[#8E96AA]">输码后本局生效：彩虹尾烟、性能包、撞墙回赛道；回到主界面后失效，下一把需重输</p>
+        {showActive ? (
+          <>
+            <p className="mb-4 text-[14px] leading-[1.6] text-[#C5CBD8]">本局生效：彩虹尾烟、性能包、撞墙回赛道</p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={cancelUse}
+                className="h-11 flex-1 rounded-[14px] border border-[#262B3D] text-[15px] font-bold text-[#C5CBD8]"
+              >
+                取消使用
+              </button>
+              <button
+                type="button"
+                onClick={close}
+                className="h-11 flex-1 rounded-[14px] bg-[#CCFF00] text-[15px] font-bold text-[#08090D]"
+              >
+                确定
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <input
+              type="text"
+              value={code}
+              autoFocus
+              onChange={(e) => {
+                setCode(e.target.value);
+                setError(false);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submit();
+                if (e.key === "Escape") close();
+              }}
+              placeholder="输入激活码"
+              className="mb-2 h-11 w-full rounded-[14px] border border-[#262B3D] bg-[#08090D] px-3.5 text-[15px] text-[#F5F7FA] outline-none placeholder:text-[#5A6278] focus:border-[#CCFF00]"
+            />
+            {error ? <p className="mb-2 text-[13px] text-[#FF6B6B]">口令不对</p> : null}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={submit}
+                className="h-11 flex-1 rounded-[14px] bg-[#CCFF00] text-[15px] font-bold text-[#08090D]"
+              >
+                激活
+              </button>
+              <button
+                type="button"
+                onClick={close}
+                className="h-11 flex-1 rounded-[14px] border border-[#262B3D] text-[15px] font-bold text-[#C5CBD8]"
+              >
+                取消
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   );
 };
 
@@ -514,8 +585,8 @@ const CompactEntry: React.FC<{ item: MenuItem; open: boolean; quiet?: boolean }>
 
 /** Controller / wheel / keyboard status pill */
 const DevicePill: React.FC<{ pad: PadState | undefined; slim?: boolean }> = ({ pad, slim }) => {
-  const kind = pad ? (isLikelyWheel(pad) ? "Wheel" : "Controller") : "Keyboard";
-  const name = pad ? padDisplayName(pad.id).slice(0, 40) : "Press any button on a controller or wheel";
+  const kind = pad ? (isLikelyWheel(pad) ? "方向盘" : "手柄") : "键盘";
+  const name = pad ? padDisplayName(pad.id).slice(0, 40) : "请按手柄或方向盘上的任意按键";
   if (slim) {
     return (
       <div className="inline-flex h-8 max-w-full min-w-0 items-center gap-2 rounded-full border border-[#262B3D] bg-[#11131A]/70 px-3.5 font-f1-mono text-[11px] font-bold tracking-[0.12em] text-[#C5CBD8] uppercase backdrop-blur">
@@ -551,7 +622,45 @@ const DevicePill: React.FC<{ pad: PadState | undefined; slim?: boolean }> = ({ p
 export const TitleMenu: React.FC<TitleMenuProps> = (props) => {
   const { firstRun, onDrive, onRaceAi, onControls, trackId = RWANDA_TRACK_ID, onSelectTrack } = props;
   const track = getTrackInfo(trackId);
+  // Preload status on the main rail itself: the per-track badges live inside
+  // the circuit panel, which players never open on the title screen, so the
+  // background preloader looked like it was not running at all.
+  const mainPreload = usePreloadStatus();
   const [panel, setPanel] = useState<TitlePanel | null>(props.initialPanel ?? null);
+  const [buffDialogOpen, setBuffDialogOpen] = useState(false);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [changelogOpen, setChangelogOpen] = useState(false);
+  const [rulesGateOpen, setRulesGateOpen] = useState(false);
+  const [rulesGateMode, setRulesGateMode] = useState<RulesGateMode>("practice");
+  const [gateFullRulesOpen, setGateFullRulesOpen] = useState(false);
+  const [pendingStart, setPendingStart] = useState<(() => void) | null>(null);
+
+  // Pre-race rules gate: a dismissed gate goes straight through; otherwise the
+  // gate dialog blocks entry until confirmed, and only then runs the pending
+  // start. Cancelling runs nothing. The gate shows only the sections for the
+  // mode being entered; the full page stays available from the menu and from
+  // the gate's "view all" button.
+  const requestStart = (run: () => void, mode: RulesGateMode) => {
+    if (isRulesGateDismissed()) {
+      run();
+      return;
+    }
+    setRulesGateMode(mode);
+    setPendingStart(() => run);
+    setRulesGateOpen(true);
+  };
+  const confirmRulesGate = () => {
+    const run = pendingStart;
+    setPendingStart(null);
+    setRulesGateOpen(false);
+    setGateFullRulesOpen(false);
+    run?.();
+  };
+  const cancelRulesGate = () => {
+    setPendingStart(null);
+    setRulesGateOpen(false);
+    setGateFullRulesOpen(false);
+  };
   const rootRef = useRef<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
   const { mode, family } = useInputMode();
@@ -591,26 +700,33 @@ export const TitleMenu: React.FC<TitleMenuProps> = (props) => {
   const items: MenuItem[] = [
     {
       id: "drive",
-      label: "Drive",
-      detail: firstRun ? "Quick setup, then out on track" : "Practice from the grid",
+      label: "练习",
+      detail: firstRun ? "快速设置，然后上赛道" : "从发车格开始练习",
       icon: Play,
-      run: onDrive,
+      run: () => requestStart(onDrive, "practice"),
       primary: true,
     },
-    { id: "race", label: "Race AI", detail: `5 AI cars · ${aiSkillLabel(props.aiSkill ?? AI_SKILL_DEFAULT)} · standing start`, icon: Flag, run: onRaceAi },
+    { id: "race", label: "与 AI 竞速", detail: `5 台 AI 赛车 · ${aiSkillLabel(props.aiSkill ?? AI_SKILL_DEFAULT)} · 静止发车`, icon: Flag, run: () => requestStart(onRaceAi, "ai") },
+    { id: "rules", label: "规则", detail: "赛道限制、罚时、排行榜与联机", icon: Info, run: () => setRulesOpen(true) },
     {
       id: "multiplayer",
-      label: "Multiplayer",
-      detail: "Race friends peer-to-peer",
+      label: "联机",
+      detail: "与好友点对点竞速",
       icon: Users,
       panel: "multiplayer",
       run: () => openPanel("multiplayer"),
-      badge: lobbyPlayers > 1 ? `${lobbyPlayers} in lobby` : undefined,
+      badge: lobbyPlayers > 1 ? `${lobbyPlayers} 人在大厅` : undefined,
     },
     {
       id: "circuit",
-      label: "Circuit",
-      detail: `${track.name} · ${km(track)} km`,
+      label: "赛道",
+      detail: `${track.name} · ${km(track)} km${
+        mainPreload.state === "loading" && mainPreload.current
+          ? ` · 预载中：${mainPreload.current}`
+          : mainPreload.state === "done" && mainPreload.readyTracks.length > 0
+            ? ` · ${mainPreload.readyTracks.length} 条赛道已预载，切换即时`
+            : ""
+      }`,
       icon: Route,
       panel: "circuit",
       run: () => openPanel("circuit"),
@@ -619,7 +735,7 @@ export const TitleMenu: React.FC<TitleMenuProps> = (props) => {
       ? [
           {
             id: "conditions",
-            label: "Conditions",
+            label: "比赛条件",
             detail: `${WEATHER_LABELS[props.conditionsPanel.conditions.weather].label} · ${TIME_OF_DAY_LABELS[props.conditionsPanel.conditions.timeOfDay]}`,
             icon: CloudSun,
             panel: "conditions" as const,
@@ -627,23 +743,14 @@ export const TitleMenu: React.FC<TitleMenuProps> = (props) => {
           },
         ]
       : []),
-    { id: "garage", label: "Garage", detail: "Engineer's garage: car, setup and presets", icon: Wrench, panel: "garage", run: () => openPanel("garage") },
+    { id: "garage", label: "车库", detail: "工程师车库：赛车、调校与预设", icon: Wrench, panel: "garage", run: () => openPanel("garage") },
     ...(props.leaderboardPanel
-      ? [{ id: "leaderboard", label: "Lap times", detail: "Leaderboard and ghosts", icon: Timer, panel: "leaderboard" as const, run: () => openPanel("leaderboard") }]
+      ? [{ id: "leaderboard", label: "圈速", detail: "排行榜与幽灵车竞速", icon: Timer, panel: "leaderboard" as const, run: () => openPanel("leaderboard") }]
       : []),
     ...(props.displayPanel
-      ? [{ id: "display", label: "Display", detail: "HUD, graphics, touch, VR", icon: MonitorCog, panel: "display" as const, run: () => openPanel("display") }]
+      ? [{ id: "display", label: "显示", detail: "HUD、画面、触屏、VR", icon: MonitorCog, panel: "display" as const, run: () => openPanel("display") }]
       : []),
-    { id: "controls", label: "Controls", detail: "Keyboard, controller or wheel", icon: Gamepad2, run: onControls },
-    { id: "credits", label: "Credits", detail: "Open-source sim · asset sources", icon: Info, panel: "credits", run: () => openPanel("credits") },
-    {
-      id: "request",
-      label: "Request a car or track",
-      detail: "Suggest new content",
-      icon: MessageSquarePlus,
-      panel: "request",
-      run: () => openPanel("request"),
-    },
+    { id: "controls", label: "操作设置", detail: "键盘、手柄或方向盘", icon: Gamepad2, run: onControls },
   ];
   const panelItems = items.filter((i) => i.panel);
   const byId = (ids: readonly string[]) => ids.flatMap((id) => items.filter((i) => i.id === id));
@@ -665,14 +772,12 @@ export const TitleMenu: React.FC<TitleMenuProps> = (props) => {
 
   const panelTitle = items.find((i) => i.panel === panel)?.label;
   const frameHeading: Record<TitlePanel, { kicker: string; color?: string }> = {
-    circuit: { kicker: "Circuit selection" },
-    conditions: { kicker: "Weather, time of day and realism", color: "#00E5FF" },
-    garage: { kicker: "Engineer's garage · setup, presets and livery" },
-    multiplayer: { kicker: "WebRTC peer-to-peer" },
-    leaderboard: { kicker: `Leaderboard · ${props.leaderboardPanel?.trackName ?? track.name}`, color: "#CCFF00" },
-    display: { kicker: "HUD, graphics, touch, VR" },
-    credits: { kicker: "About LibreCorsa & credits" },
-    request: { kicker: "Suggest new content" },
+    circuit: { kicker: "赛道选择" },
+    conditions: { kicker: "天气、时段与真实度", color: "#00E5FF" },
+    garage: { kicker: "工程师车库 · 调校、预设与涂装" },
+    multiplayer: { kicker: "WebRTC 点对点" },
+    leaderboard: { kicker: `排行榜 · ${props.leaderboardPanel?.trackName ?? track.name}`, color: "#CCFF00" },
+    display: { kicker: "HUD、画面、触屏、VR" },
   };
 
   const vehicle = carById(props.carId);
@@ -696,12 +801,15 @@ export const TitleMenu: React.FC<TitleMenuProps> = (props) => {
           {panel ? (
             <>
               <LibreCorsaLogo variant="compact" size="sm" />
+              <span className="inline-flex items-center rounded-full border border-[#262B3D] bg-[#11131A]/70 px-3 py-1 font-f1-mono text-[16px] font-bold tracking-[0.18em] text-[#E6EAF2]">温越出品</span>
+              <GiftButton active={props.buffActive ?? false} onOpen={() => setBuffDialogOpen(true)} />
               <DevicePill pad={pad} slim />
             </>
           ) : (
             <>
               <div className="flex min-w-0 flex-wrap items-center gap-x-[22px] gap-y-3">
                 <LibreCorsaLogo variant="compact" size="md" />
+                <span className="inline-flex items-center rounded-full border border-[#262B3D] bg-[#11131A]/70 px-3 py-1 font-f1-mono text-[16px] font-bold tracking-[0.18em] text-[#E6EAF2]">温越出品</span>
                 <div className="inline-flex h-8 max-w-full min-w-0 items-center gap-2.5 rounded-full border border-[#262B3D] bg-[#11131A]/70 px-3.5 font-f1-mono text-[11px] font-bold tracking-[0.14em] text-[#CCFF00] uppercase backdrop-blur">
                   <span className="relative flex h-2 w-2 shrink-0">
                     <span className="lc-ping absolute inline-flex h-full w-full rounded-full bg-[#CCFF00]" />
@@ -709,6 +817,7 @@ export const TitleMenu: React.FC<TitleMenuProps> = (props) => {
                   </span>
                   <span className="truncate">{kicker}</span>
                 </div>
+                <GiftButton active={props.buffActive ?? false} onOpen={() => setBuffDialogOpen(true)} />
               </div>
               <div className="flex min-w-0 flex-wrap items-center gap-2.5">
                 <DevicePill pad={pad} />
@@ -716,7 +825,7 @@ export const TitleMenu: React.FC<TitleMenuProps> = (props) => {
                   props.displayPanel ? (
                     <button
                       type="button"
-                      aria-label="Edit driver profile"
+                      aria-label="编辑车手资料"
                       onClick={() => openPanel("display")}
                       className="inline-flex h-9 cursor-pointer items-center gap-2.5 rounded-full border border-[#262B3D] bg-[#11131A]/70 py-0 pr-3.5 pl-2 text-[#F5F7FA] backdrop-blur transition-colors hover:border-[#3A4157]"
                     >
@@ -744,17 +853,13 @@ export const TitleMenu: React.FC<TitleMenuProps> = (props) => {
         {panel ? (
           /* Panel view: slim rail + the panel's sheet */
           <div className="grid flex-1 grid-cols-1 items-start gap-5 lg:grid-cols-[250px_minmax(0,1000px)] lg:gap-7">
-            <nav className="flex flex-col gap-0.5" data-nav-zone="rail" aria-label="Main menu">
+            <nav className="flex flex-col gap-0.5" data-nav-zone="rail" aria-label="主菜单">
               {byId(["drive", "race", "multiplayer"]).map((item) => (
                 <CompactEntry key={item.id} item={item} open={item.panel === panel} />
               ))}
               <div aria-hidden className="mx-3.5 my-2 h-px bg-[#262B3D]" />
-              {byId(["circuit", "conditions", "garage", "leaderboard", "display", "controls"]).map((item) => (
+              {byId(["circuit", "conditions", "garage", "leaderboard", "display", "controls", "rules"]).map((item) => (
                 <CompactEntry key={item.id} item={item} open={item.panel === panel} />
-              ))}
-              <div aria-hidden className="mx-3.5 my-2 h-px bg-[#262B3D]" />
-              {byId(["credits", "request"]).map((item) => (
-                <CompactEntry key={item.id} item={item} open={item.panel === panel} quiet />
               ))}
             </nav>
 
@@ -763,34 +868,40 @@ export const TitleMenu: React.FC<TitleMenuProps> = (props) => {
                 <PanelFrame
                   kicker={frameHeading[panel].kicker}
                   kickerColor={frameHeading[panel].color}
-                  title={panel === "request" ? undefined : panelTitle}
+                  title={panelTitle}
                   onClose={closePanel}
                 >
                   {panel === "circuit" ? <CircuitPanel trackId={trackId} onSelect={onSelectTrack} map={map} /> : null}
                   {panel === "conditions" && props.conditionsPanel ? <ConditionsPanel {...props.conditionsPanel} /> : null}
                   {panel === "garage" ? <EngineersGarage {...props} /> : null}
-                  {panel === "multiplayer" ? <MultiplayerPanel {...props} /> : null}
+                  {panel === "multiplayer" ? (
+                    <MultiplayerPanel {...props} onStartRace={() => requestStart(() => props.onStartRace?.(), "multiplayer")} />
+                  ) : null}
                   {panel === "leaderboard" && props.leaderboardPanel ? <LeaderboardPanel {...props.leaderboardPanel} /> : null}
                   {panel === "display" && props.displayPanel ? <DisplayPanel {...props.displayPanel} /> : null}
-                  {panel === "credits" ? <Credits /> : null}
-                  {panel === "request" ? <RequestPanel /> : null}
                 </PanelFrame>
               </div>
             </section>
           </div>
         ) : (
-          /* Title screen: the menu bottom-left, what Drive launches bottom-right */
-          <main className="flex flex-1 flex-wrap items-end justify-between gap-8 compact:items-start short:gap-5">
-            <nav className="flex w-full max-w-[460px] flex-col gap-1.5" data-nav-zone="rail" aria-label="Main menu">
-              {byId(["drive"]).map((item) => (
-                <DriveHero key={item.id} item={item} pad={mode === "pad"} family={family} />
-              ))}
-              {byId(["race", "multiplayer"]).map((item) => (
-                <MainEntry key={item.id} item={item} />
-              ))}
+          /* Title screen: the menu top-left, right under the header, so 练习
+             is not left far below the big title by bottom alignment */
+          <main className="flex flex-1 flex-wrap items-start justify-between gap-8 short:gap-5">
+            <nav className="flex w-full max-w-[460px] flex-col gap-1.5" data-nav-zone="rail" aria-label="主菜单">
+              {/* The three main actions only: 练习 stays anchored at the top,
+                 the extra gap (6px -> 12px) extends downwards, pushing 与 AI 竞速
+                 and 联机 down; the rest of the nav keeps its original spacing */}
+              <div className="flex flex-col gap-3">
+                {byId(["drive"]).map((item) => (
+                  <DriveHero key={item.id} item={item} pad={mode === "pad"} family={family} />
+                ))}
+                {byId(["race", "multiplayer"]).map((item) => (
+                  <MainEntry key={item.id} item={item} />
+                ))}
+              </div>
               <div className="mt-[18px] mb-1 ml-[22px] flex items-center gap-2.5 compact:mt-3 short:mt-2">
                 <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-[#CCFF00]" />
-                <span className="lc-lbl">Setup</span>
+                <span className="lc-lbl">设置</span>
               </div>
               <div className="grid grid-cols-1 gap-1 min-[400px]:grid-cols-2">
                 {byId(["circuit", "conditions", "garage", "controls", "display"]).map((item) => (
@@ -798,20 +909,23 @@ export const TitleMenu: React.FC<TitleMenuProps> = (props) => {
                 ))}
               </div>
               <div className="mt-3.5 ml-2.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 short:mt-2">
-                {byId(["leaderboard", "credits", "request"]).map((item) => (
+                {byId(["leaderboard"]).map((item) => (
+                  <LinkEntry key={item.id} item={item} />
+                ))}
+                {byId(["rules"]).map((item) => (
                   <LinkEntry key={item.id} item={item} />
                 ))}
               </div>
             </nav>
 
             <section
-              aria-label="Up next"
+              aria-label="接下来"
               className="lc-glass lc-drift flex w-full max-w-[340px] flex-col gap-4 rounded-[26px] p-5 text-[#F5F7FA] short:hidden"
             >
               <div className="flex items-center justify-between gap-3">
-                <span className="lc-lbl">Up next · Practice</span>
+                <span className="lc-lbl">接下来 · 练习</span>
                 <span className="font-f1-mono text-[10px] font-extrabold tracking-[0.12em] text-[#CCFF00] uppercase">
-                  {track.direction}
+                  {/counter|anti/i.test(track.direction) ? "逆时针" : /clock/i.test(track.direction) ? "顺时针" : track.direction}
                 </span>
               </div>
               <div className="flex items-center gap-4">
@@ -822,7 +936,7 @@ export const TitleMenu: React.FC<TitleMenuProps> = (props) => {
                     {track.layout} · {track.city}
                   </span>
                   <span className="font-f1-mono text-[12px] font-bold text-[#C5CBD8]">
-                    {km(track)} KM · {track.turns} TURNS
+                    {km(track)} KM · {track.turns} 个弯
                   </span>
                 </div>
               </div>
@@ -830,7 +944,7 @@ export const TitleMenu: React.FC<TitleMenuProps> = (props) => {
               <dl className="m-0 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-4 gap-y-2.5">
                 {vehicle ? (
                   <>
-                    <dt className="lc-lbl text-[10px]">Car</dt>
+                    <dt className="lc-lbl text-[10px]">赛车</dt>
                     <dd className="m-0 flex min-w-0 items-center justify-end gap-2 text-[14px] font-semibold">
                       <span
                         className="shrink-0 rounded-full px-1.5 py-0.5 font-f1-mono text-[9px] font-extrabold text-[#08090D]"
@@ -844,7 +958,7 @@ export const TitleMenu: React.FC<TitleMenuProps> = (props) => {
                 ) : null}
                 {livery ? (
                   <>
-                    <dt className="lc-lbl text-[10px]">Livery</dt>
+                    <dt className="lc-lbl text-[10px]">涂装</dt>
                     <dd className="m-0 flex min-w-0 items-center justify-end gap-2 text-[14px] font-semibold">
                       <span
                         aria-hidden
@@ -857,10 +971,10 @@ export const TitleMenu: React.FC<TitleMenuProps> = (props) => {
                     </dd>
                   </>
                 ) : null}
-                <dt className="lc-lbl text-[10px]">Assists</dt>
+                <dt className="lc-lbl text-[10px]">辅助</dt>
                 <dd className="m-0 truncate text-right text-[14px] font-semibold">
                   {ASSIST_LABELS[props.assistPreset] ?? props.assistPreset}
-                  {props.showRacingLine ? " · racing line" : ""}
+                  {props.showRacingLine ? " · 赛车线" : ""}
                 </dd>
                 {hudPreset ? (
                   <>
@@ -877,18 +991,46 @@ export const TitleMenu: React.FC<TitleMenuProps> = (props) => {
         <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-[#262B3D]/70 pt-3">
           <PromptBar
             prompts={[
-              { action: "move", label: "Move" },
-              { action: "select", label: "Select" },
-              ...(panel ? [{ action: "back" as const, label: panelTitle ? `Close ${panelTitle}` : "Back" }] : []),
-              { action: "tabs", label: "Switch panel" },
+              { action: "move", label: "移动" },
+              { action: "select", label: "选择" },
+              ...(panel ? [{ action: "back" as const, label: panelTitle ? `关闭 ${panelTitle}` : "返回" }] : []),
+              { action: "tabs", label: "切换面板" },
             ]}
           />
-          <span className="font-f1-mono text-[11px] font-bold tracking-[0.12em] text-[#8E96AA]">
-            {(TRACK_TOTAL_LENGTH_M / 1000).toFixed(2)} KM · {TURN_METADATA.length} TURNS
-            {panel ? null : <span className="hidden text-[#CCFF00]/80 xl:inline"> · 500 HZ VEHICLE DYNAMICS</span>}
+          <span className="flex items-center gap-3">
+            <button
+              type="button"
+              aria-label="版本日志"
+              onClick={() => setChangelogOpen(true)}
+              className="inline-flex h-8 cursor-pointer items-center rounded-full border border-[#262B3D] bg-[#11131A]/70 px-3.5 font-f1-mono text-[11px] font-bold tracking-[0.12em] text-[#CCFF00] hover:border-[#CCFF00]"
+            >
+              版本 {CURRENT_VERSION}
+            </button>
+            <span className="font-f1-mono text-[11px] font-bold tracking-[0.12em] text-[#8E96AA]">
+              {(TRACK_TOTAL_LENGTH_M / 1000).toFixed(2)} KM · {TURN_METADATA.length} 个弯
+              {panel ? null : <span className="hidden text-[#CCFF00]/80 xl:inline"> · 500 HZ 车辆动力学</span>}
+            </span>
           </span>
         </footer>
       </div>
+      {rulesOpen ? <RulesPage onClose={() => setRulesOpen(false)} /> : null}
+      {changelogOpen ? <ChangelogPage onClose={() => setChangelogOpen(false)} /> : null}
+      {rulesGateOpen ? (
+        <RulesGateDialog
+          mode={rulesGateMode}
+          onViewAll={() => setGateFullRulesOpen(true)}
+          onConfirm={confirmRulesGate}
+          onCancel={cancelRulesGate}
+        />
+      ) : null}
+      {gateFullRulesOpen ? <RulesPage onClose={() => setGateFullRulesOpen(false)} /> : null}
+      <ActivationDialog
+        open={buffDialogOpen}
+        active={props.buffActive ?? false}
+        onClose={() => setBuffDialogOpen(false)}
+        onActivated={() => props.onBuffActivated?.()}
+        onCleared={() => props.onBuffCleared?.()}
+      />
     </div>
   );
 };

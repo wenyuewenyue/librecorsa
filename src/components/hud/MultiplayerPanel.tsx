@@ -22,6 +22,7 @@ export interface MultiplayerPanelProps {
   initialRoomCode?: string;
   onHostP2PRoom?: (customCode?: string) => string;
   onJoinP2PRoom?: (roomCode: string) => void;
+  onCancelJoinP2PRoom?: () => void;
   onCreateManualOffer?: () => Promise<string>;
   onAcceptManualOffer?: (offerToken: string) => Promise<string>;
   onAcceptManualAnswer?: (answerToken: string) => Promise<boolean>;
@@ -52,15 +53,15 @@ const MIN_LAPS = 1;
 const MAX_LAPS = 50;
 
 const COLLISION_OPTIONS: { value: CollisionMode; label: string }[] = [
-  { value: "on", label: "On" },
-  { value: "ghost_lap1", label: "Ghosted lap 1" },
-  { value: "off", label: "Off" },
+  { value: "on", label: "开启" },
+  { value: "ghost_lap1", label: "第 1 圈幽灵化" },
+  { value: "off", label: "关闭" },
 ];
 
 const CLASS_OPTIONS: { value: CarClassRule; label: string }[] = [
-  { value: "any", label: "Any" },
-  { value: "f1", label: "F1 only" },
-  { value: "gt3", label: "GT3 only" },
+  { value: "any", label: "任意" },
+  { value: "f1", label: "仅 F1" },
+  { value: "gt3", label: "仅 GT3" },
 ];
 
 const trackName = (id: string) => TRACKS.find((t) => t.id === id)?.name ?? id;
@@ -131,17 +132,17 @@ function NetBadge({ stats }: { stats?: PeerNetStats }) {
     <>
       {stats.relayed ? (
         <span
-          title="Traffic reaches you through the host"
+          title="数据经由房主中转"
           className={`${CHIP} uppercase shadow-[inset_0_0_0_1px_rgba(0,229,255,0.5)] text-[#00E5FF]`}
         >
-          relayed
+          中转
         </span>
       ) : null}
       {stats.rttMs == null ? (
-        <span className={`${CHIP} text-[#8E96AA] shadow-[inset_0_0_0_1px_#262B3D]`}>measuring…</span>
+        <span className={`${CHIP} text-[#8E96AA] shadow-[inset_0_0_0_1px_#262B3D]`}>测量中…</span>
       ) : (
         <span className={`${CHIP} ${pingChip(stats.rttMs)}`}>
-          {Math.round(stats.rttMs)} ms · {Math.round(stats.lossPct)}% loss
+          {Math.round(stats.rttMs)} 毫秒 · 掉包 {Math.round(stats.lossPct)}%
         </span>
       )}
     </>
@@ -154,6 +155,7 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
   initialRoomCode = "",
   onHostP2PRoom,
   onJoinP2PRoom,
+  onCancelJoinP2PRoom,
   onCreateManualOffer,
   onAcceptManualOffer,
   onAcceptManualAnswer,
@@ -244,7 +246,7 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
     const url = getInviteUrl();
     if (!url || typeof navigator === "undefined" || typeof navigator.share !== "function") return;
     try {
-      await navigator.share({ title: "LibreCorsa race", text: "Join my race", url });
+      await navigator.share({ title: "WY赛车比赛", text: "加入我的比赛", url });
     } catch {
       // Share sheet dismissed or unavailable
     }
@@ -263,7 +265,7 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
   const saveTurn = () => {
     const url = turnUrl.trim();
     if (!/^turns?:/i.test(url)) {
-      setTurnError("The URL must start with turn: or turns:");
+      setTurnError("地址必须以 turn: 或 turns: 开头");
       return;
     }
     setTurnError("");
@@ -308,19 +310,19 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
       <div className="flex min-w-0 flex-col gap-3.5">
         <div className="flex flex-wrap items-center justify-between gap-2.5">
           <span className="lc-title text-[18px] leading-tight text-[#F5F7FA]">
-            Lobby · host <span className="text-[#CCFF00]">{hostPlayer?.name ?? "—"}</span>
+            大厅 · 房主 <span className="text-[#CCFF00]">{hostPlayer?.name ?? "—"}</span>
           </span>
-          {isHost ? <span className={`${CHIP} bg-[#CCFF00]/[0.12] text-[#CCFF00] uppercase`}>You are host</span> : null}
+          {isHost ? <span className={`${CHIP} bg-[#CCFF00]/[0.12] text-[#CCFF00] uppercase`}>你是房主</span> : null}
         </div>
 
         <div className="grid grid-cols-2 gap-2.5">
           <div className={`${CARD} flex flex-col gap-2 !p-3 !rounded-[18px]`}>
-            <span className="lc-lbl text-[9px]">Laps</span>
+            <span className="lc-lbl text-[9px]">圈数</span>
             {isHost ? (
               <div className="flex items-center justify-between gap-1.5">
                 <button
                   type="button"
-                  aria-label="Fewer laps"
+                  aria-label="减少圈数"
                   disabled={settings.laps <= MIN_LAPS}
                   onClick={() => setLaps(settings.laps - 1)}
                   className={stepButtonClass}
@@ -330,7 +332,7 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
                 <span className="lc-data min-w-8 text-center text-[24px] leading-none text-[#F5F7FA]">{settings.laps}</span>
                 <button
                   type="button"
-                  aria-label="More laps"
+                  aria-label="增加圈数"
                   disabled={settings.laps >= MAX_LAPS}
                   onClick={() => setLaps(settings.laps + 1)}
                   className={stepButtonClass}
@@ -344,19 +346,19 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
           </div>
 
           <div className={`${CARD} flex flex-col gap-2 !p-3 !rounded-[18px]`}>
-            <span className="lc-lbl text-[9px]">Circuit</span>
+            <span className="lc-lbl text-[9px]">赛道</span>
             <ReadValue>{trackName(settings.trackId)}</ReadValue>
           </div>
 
           <RuleRow
-            label="Collisions"
+            label="碰撞"
             value={settings.collisions}
             options={COLLISION_OPTIONS}
             editable={isHost}
             onChange={(collisions) => onSetLobbySettings?.({ collisions })}
           />
           <RuleRow
-            label="Car class"
+            label="车辆级别"
             value={settings.carClass}
             options={CLASS_OPTIONS}
             editable={isHost}
@@ -379,7 +381,7 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
                     <span className="font-f1-mono text-[12px] font-extrabold tracking-[0.1em]">{p.code}</span>
                     <span className="truncate">
                       {p.name}
-                      {isMe ? <span className="font-normal text-[#8E96AA]"> (you)</span> : null}
+                      {isMe ? <span className="font-normal text-[#8E96AA]">（你）</span> : null}
                     </span>
                   </span>
                   <span className="truncate text-[12px] text-[#8E96AA]">{carName}</span>
@@ -388,7 +390,7 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
                   {isHostPlayer(p) ? (
                     <span className={`${CHIP} bg-[#CCFF00]/[0.12] text-[#CCFF00] uppercase`}>
                       <Crown className="h-3 w-3" strokeWidth={2.4} />
-                      Host
+                      房主
                     </span>
                   ) : null}
                   {!isMe ? <NetBadge stats={peerStats?.find((s) => s.peerId === p.peerId)} /> : null}
@@ -397,7 +399,7 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
                       p.ready ? "bg-[#00E676]/[0.12] text-[#00E676]" : "text-[#8E96AA] shadow-[inset_0_0_0_1px_#262B3D]"
                     }`}
                   >
-                    {p.ready ? "Ready" : "Not ready"}
+                    {p.ready ? "已准备" : "未准备"}
                   </span>
                 </div>
               </li>
@@ -409,14 +411,14 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
           <div className="flex flex-col gap-2">
             {trackMismatch ? (
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-[16px] border border-[#FFB300]/40 bg-[#FFB300]/[0.08] px-3.5 py-2.5">
-                <span className="text-[13px] font-semibold text-[#FFB300]">The host is on {trackName(settings.trackId)}</span>
+                <span className="text-[13px] font-semibold text-[#FFB300]">房主在 {trackName(settings.trackId)}</span>
                 {onSwitchTrack ? (
                   <button
                     type="button"
                     onClick={() => onSwitchTrack(settings.trackId)}
                     className="inline-flex min-h-9 cursor-pointer items-center rounded-full border border-[#FFB300]/60 bg-[#FFB300]/15 px-3.5 text-[13px] font-bold text-[#FFB300] hover:bg-[#FFB300]/25"
                   >
-                    Switch circuit
+                    切换赛道
                   </button>
                 ) : null}
               </div>
@@ -424,7 +426,7 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
             {vehicleBlocked && allowedVehicles ? (
               <div className="flex flex-col gap-2 rounded-[16px] border border-[#FFB300]/40 bg-[#FFB300]/[0.08] px-3.5 py-2.5">
                 <span className="text-[13px] font-semibold text-[#FFB300]">
-                  Your car is not allowed in {optionLabel(CLASS_OPTIONS, settings.carClass)} races. Pick one:
+                  你的车辆不允许参加 {optionLabel(CLASS_OPTIONS, settings.carClass)} 比赛。请选择：
                 </span>
                 <div className="flex flex-wrap gap-1.5">
                   {allowedVehicles.map((id) => (
@@ -453,7 +455,7 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
               className="inline-flex h-14 cursor-pointer items-center justify-center gap-3 rounded-full border-0 bg-[#CCFF00] text-[#08090D] shadow-[0_0_0_5px_rgba(204,255,0,0.12),0_14px_34px_rgba(204,255,0,0.2)] transition-colors hover:bg-[#d9ff33] disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none"
             >
               <Play aria-hidden className="h-[18px] w-[18px]" fill="currentColor" strokeWidth={0} />
-              <span className="lc-disp text-[22px]">{raceRunning ? "Race in progress" : "Start race"}</span>
+              <span className="lc-disp text-[22px]">{raceRunning ? "比赛进行中" : "开始比赛"}</span>
             </button>
             {raceRunning && onAbortRace ? (
               <button
@@ -461,11 +463,11 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
                 onClick={() => onAbortRace()}
                 className="inline-flex min-h-[44px] cursor-pointer items-center justify-center rounded-full border border-[#FF2A3C]/60 bg-[#FF2A3C]/[0.12] px-4 text-[14px] font-bold text-[#FF2A3C] hover:bg-[#FF2A3C]/25"
               >
-                End race for everyone
+                为所有人结束比赛
               </button>
             ) : null}
             {!raceRunning ? (
-              <span className="text-center text-[12px] text-[#8E96AA]">Everyone not ready will still start.</span>
+              <span className="text-center text-[12px] text-[#8E96AA]">未准备的玩家仍会一同开始。</span>
             ) : null}
           </div>
         ) : (
@@ -482,10 +484,10 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
               }`}
             >
               {ready ? <Check aria-hidden className="h-5 w-5" strokeWidth={3} /> : null}
-              <span className="lc-disp text-[22px]">{ready ? "Ready" : "Ready up"}</span>
+              <span className="lc-disp text-[22px]">{ready ? "已准备" : "准备"}</span>
             </button>
             <span className="text-center text-[12px] text-[#8E96AA]">
-              {raceRunning ? "Race in progress." : "Tap to toggle. The host starts the race."}
+              {raceRunning ? "比赛进行中。" : "轻触切换。由房主开始比赛。"}
             </span>
           </div>
         )}
@@ -503,7 +505,7 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
       <div className="flex min-w-0 flex-col gap-3.5">
         <div className={`${CARD} flex flex-col gap-3.5`}>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="lc-lbl">Room code</span>
+            <span className="lc-lbl">房间代码</span>
             <span
               className={`${CHIP} h-[26px] text-[11px] uppercase ${
                 p2pStatus?.state === "connected"
@@ -519,57 +521,63 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
                 ) : null}
                 <span className="relative h-[7px] w-[7px] rounded-full bg-current" />
               </span>
-              {connected} connected
+              {connected} 人已连接
             </span>
           </div>
           {hostedCode ? (
             <div
               className="font-f1-mono text-[40px] leading-none font-extrabold tracking-[0.14em] break-all text-[#CCFF00] tabular-nums sm:text-[46px]"
-              aria-label={`Room code ${hostedCode}`}
+              aria-label={`房间代码 ${hostedCode}`}
             >
               {hostedCode}
             </div>
           ) : (
             <p className="m-0 text-[14px] leading-snug text-[#8E96AA]">
-              No room yet. Host one, or enter a friend&apos;s code to join theirs.
+              暂无房间。创建一个房间，或输入朋友的代码加入。
             </p>
           )}
           <div className="flex flex-wrap gap-2">
             <button type="button" disabled={!activeCode} onClick={copyLink} className={`flex-1 ${hostedCode ? PILL_VOLT : PILL_DARK}`}>
               {copiedLink ? <Check aria-hidden className="h-4 w-4" strokeWidth={2.4} /> : <Copy aria-hidden className="h-4 w-4" strokeWidth={2.2} />}
-              {copiedLink ? "Link copied" : "Copy link"}
+              {copiedLink ? "链接已复制" : "复制链接"}
             </button>
             {canShare ? (
               <button type="button" disabled={!activeCode} onClick={() => void shareInvite()} className={`flex-1 ${PILL_DARK}`}>
                 <Share2 aria-hidden className="h-4 w-4" strokeWidth={2.2} />
-                Share…
+                分享…
               </button>
             ) : null}
           </div>
           <div className="h-px bg-[#262B3D]" />
           <div className="flex flex-col gap-2">
-            <span className="lc-lbl text-[10px]">{hostedCode ? "Join another room" : "Host or join a room"}</span>
+            <span className="lc-lbl text-[10px]">{hostedCode ? "加入另一个房间" : "创建或加入房间"}</span>
             <div className="flex flex-wrap gap-2">
               <input
                 type="text"
                 maxLength={6}
                 value={roomCodeInput}
                 onChange={(e) => setRoomCodeInput(e.target.value.toUpperCase())}
-                placeholder="CODE"
-                aria-label="Room code"
+                placeholder="代码"
+                aria-label="房间代码"
                 className="h-11 min-w-[7rem] flex-1 rounded-full border border-[#262B3D] bg-[#08090D] px-4 font-f1-mono text-[15px] font-extrabold tracking-[0.3em] text-[#F5F7FA] uppercase placeholder:text-[#8E96AA]/50 focus:border-[#CCFF00] focus:shadow-[0_0_0_4px_rgba(204,255,0,0.12)] focus:outline-none"
               />
               <button
                 type="button"
+                disabled={roomCodeInput.trim().length < 3}
                 onClick={() => {
                   if (roomCodeInput.trim().length >= 3) onJoinP2PRoom?.(roomCodeInput.trim());
                 }}
                 className={PILL_CYAN}
               >
-                Join
+                加入
               </button>
+              {p2pStatus?.mode === "room_guest" && p2pStatus?.state === "signaling" ? (
+                <button type="button" onClick={() => onCancelJoinP2PRoom?.()} className={PILL_DARK}>
+                  取消
+                </button>
+              ) : null}
               <button type="button" onClick={hostRoom} className={hostedCode ? PILL_DARK : PILL_VOLT}>
-                Host
+                创建
               </button>
             </div>
           </div>
@@ -579,13 +587,13 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
             onClick={() => onHostLocal?.()}
             className="self-start cursor-pointer text-left text-[13px] font-semibold text-[#00E5FF] hover:text-[#CCFF00] hover:underline disabled:cursor-not-allowed disabled:opacity-40 disabled:no-underline"
           >
-            Race these tabs (same browser)
+            用这些标签页对战（同一浏览器）
           </button>
         </div>
 
         {profile ? (
           <div className="flex min-w-0 items-center gap-2.5 rounded-full border border-[#262B3D] bg-[#08090D]/60 py-1.5 pr-3 pl-3.5">
-            <span className="lc-lbl text-[9px]">You</span>
+            <span className="lc-lbl text-[9px]">你</span>
             <span className="h-3.5 w-3.5 shrink-0 rounded-full" style={{ backgroundColor: profile.color }} />
             <span className="font-f1-mono text-[12px] font-extrabold tracking-[0.1em]">{profile.code}</span>
             <span className="min-w-0 flex-1 truncate text-[14px] font-semibold">{profile.name}</span>
@@ -596,7 +604,7 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
                 className="inline-flex min-h-8 shrink-0 cursor-pointer items-center gap-1.5 px-1 text-[13px] font-bold text-[#00E5FF] hover:text-[#CCFF00]"
               >
                 <Pencil aria-hidden className="h-3.5 w-3.5" strokeWidth={2.2} />
-                Edit
+                编辑
               </button>
             ) : null}
           </div>
@@ -613,9 +621,9 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
             onClick={() => setAdvancedOpen((open) => !open)}
             className="flex min-h-[44px] w-full cursor-pointer items-center justify-between gap-2 rounded-[22px] px-4 py-2 text-left hover:bg-white/[0.04]"
           >
-            <span className="lc-title text-[14px] text-[#8E96AA]">Advanced · manual connection &amp; TURN relay</span>
+            <span className="lc-title text-[14px] text-[#8E96AA]">高级 · 手动连接与 TURN 中转</span>
             <span className="flex shrink-0 items-center gap-2">
-              {turnConfigured ? <span className={`${CHIP} bg-[#00E5FF]/[0.12] text-[#00E5FF] uppercase`}>TURN relay</span> : null}
+              {turnConfigured ? <span className={`${CHIP} bg-[#00E5FF]/[0.12] text-[#00E5FF] uppercase`}>TURN 中转</span> : null}
               <ChevronDown
                 aria-hidden
                 className={`h-4 w-4 text-[#8E96AA] transition-transform ${advancedOpen ? "rotate-180" : ""}`}
@@ -627,7 +635,7 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
           {advancedOpen ? (
             <div className="flex flex-col gap-4 border-t border-[#262B3D] p-4">
               <div className="flex flex-col gap-2.5">
-                <span className="lc-title text-[14px] text-[#FFB300]">Manual connection (no broker)</span>
+                <span className="lc-title text-[14px] text-[#FFB300]">手动连接（无中介服务器）</span>
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
@@ -640,7 +648,7 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
                     }
                     className="inline-flex min-h-9 cursor-pointer items-center rounded-full border border-[#00E5FF]/50 bg-[#00E5FF]/[0.12] px-3.5 text-[12px] font-bold text-[#00E5FF] disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    1 · Create offer (host)
+                    1 · 创建提议（房主）
                   </button>
                   <button
                     type="button"
@@ -653,7 +661,7 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
                     }
                     className="inline-flex min-h-9 cursor-pointer items-center rounded-full border border-[#FFB300]/50 bg-[#FFB300]/[0.12] px-3.5 text-[12px] font-bold text-[#FFB300] disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    2 · Paste offer, get answer
+                    2 · 粘贴提议，获取应答
                   </button>
                   <button
                     type="button"
@@ -665,15 +673,15 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
                     }
                     className="inline-flex min-h-9 cursor-pointer items-center rounded-full border border-[#00E676]/50 bg-[#00E676]/[0.12] px-3.5 text-[12px] font-bold text-[#00E676] disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    3 · Accept answer (host)
+                    3 · 接受应答（房主）
                   </button>
                 </div>
                 <input
                   type="text"
                   value={sdpInput}
                   onChange={(e) => setSdpInput(e.target.value)}
-                  placeholder="Paste the other player's token here"
-                  aria-label="Connection token"
+                  placeholder="在此粘贴对方玩家的令牌"
+                  aria-label="连接令牌"
                   className={inputClass}
                 />
                 {generatedToken ? (
@@ -682,7 +690,7 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
                       type="text"
                       readOnly
                       value={generatedToken}
-                      aria-label="Generated token"
+                      aria-label="生成的令牌"
                       className={`${inputClass} flex-1 !border-[#00E676]/50 text-[#00E676]`}
                     />
                     <button
@@ -695,17 +703,16 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
                       className="inline-flex h-11 shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-[#00E676] px-4 text-[13px] font-bold text-[#08090D]"
                     >
                       {copiedToken ? <Check aria-hidden className="h-4 w-4" /> : <Copy aria-hidden className="h-4 w-4" />}
-                      {copiedToken ? "Copied" : "Copy"}
+                      {copiedToken ? "已复制" : "复制"}
                     </button>
                   </div>
                 ) : null}
               </div>
 
               <div className="flex flex-col gap-2.5 border-t border-[#262B3D] pt-4">
-                <span className="lc-title text-[14px] text-[#00E5FF]">TURN relay</span>
+                <span className="lc-title text-[14px] text-[#00E5FF]">TURN 中转</span>
                 <p className="m-0 text-[12px] leading-snug text-[#8E96AA]">
-                  Needed when players are on strict NATs or mobile data. Free TURN: Cloudflare Calls, Metered.ca. Applies to
-                  new connections.
+                  玩家处于严格 NAT 或使用移动数据时需要。免费 TURN：Cloudflare Calls、Metered.ca。仅对新连接生效。
                 </p>
                 <div className="grid gap-2 sm:grid-cols-3">
                   <input
@@ -713,7 +720,7 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
                     value={turnUrl}
                     onChange={(e) => setTurnUrl(e.target.value)}
                     placeholder="turn:host:3478"
-                    aria-label="TURN URL"
+                    aria-label="TURN 地址"
                     autoComplete="off"
                     className={inputClass}
                   />
@@ -721,8 +728,8 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
                     type="text"
                     value={turnUser}
                     onChange={(e) => setTurnUser(e.target.value)}
-                    placeholder="Username"
-                    aria-label="TURN username"
+                    placeholder="用户名"
+                    aria-label="TURN 用户名"
                     autoComplete="off"
                     className={inputClass}
                   />
@@ -730,8 +737,8 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
                     type="password"
                     value={turnCred}
                     onChange={(e) => setTurnCred(e.target.value)}
-                    placeholder="Credential"
-                    aria-label="TURN credential"
+                    placeholder="凭证"
+                    aria-label="TURN 凭证"
                     autoComplete="new-password"
                     className={inputClass}
                   />
@@ -739,10 +746,10 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
                 {turnError ? <p className="m-0 text-[12px] font-semibold text-[#FF2A3C]">{turnError}</p> : null}
                 <div className="flex flex-wrap items-center gap-2">
                   <button type="button" disabled={!turnUrl.trim()} onClick={saveTurn} className={`${PILL_CYAN} min-h-9 text-[13px]`}>
-                    {turnSaved ? "Saved" : "Save"}
+                    {turnSaved ? "已保存" : "保存"}
                   </button>
                   <button type="button" onClick={clearTurn} className={`${PILL_DARK} min-h-9 text-[13px] hover:!border-[#FF2A3C]`}>
-                    Clear
+                    清除
                   </button>
                 </div>
               </div>
@@ -751,7 +758,18 @@ export const MultiplayerPanel: React.FC<MultiplayerPanelProps> = ({
         </div>
 
         <p className="m-0 font-f1-mono text-[11px] leading-normal text-[#8E96AA]/80">
-          {p2pStatus?.statusText ?? "Same-browser tabs connect automatically. Use a room code for other devices."}
+          {p2pStatus?.statusText ?? "同一浏览器的标签页会自动连接。其他设备请使用房间代码。"}
+          {p2pStatus?.state === "signaling" && p2pStatus?.iceState
+            ? {
+                checking: " · 直连：检查中",
+                connected: " · 直连：已连接",
+                completed: " · 直连：已连接",
+                failed: " · 直连：已失败",
+                disconnected: " · 直连：已断开",
+                new: "",
+                closed: "",
+              }[p2pStatus.iceState] ?? ""
+            : ""}
         </p>
       </div>
 
