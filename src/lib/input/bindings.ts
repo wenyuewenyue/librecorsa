@@ -21,7 +21,8 @@ export type KeyAction =
   | "restart"
   | "throttleHalf"
   | "replay"
-  | "mfdPage";
+  | "mfdPage"
+  | "keysOverlay";
 
 /** Actions a controller or wheel button can trigger */
 export type PadAction =
@@ -43,38 +44,39 @@ export type KeyBindings = Record<KeyAction, string[]>;
 export const KEY_SLOTS = 2;
 
 export const KEY_ACTIONS: readonly { id: KeyAction; label: string }[] = [
-  { id: "throttle", label: "Throttle" },
-  { id: "brake", label: "Brake" },
-  { id: "steerLeft", label: "Steer left" },
-  { id: "steerRight", label: "Steer right" },
-  { id: "boostHold", label: "Boost (hold)" },
-  { id: "boostLatch", label: "Boost (latch)" },
-  { id: "aero", label: "Active aero X / Z" },
-  { id: "shiftUp", label: "Gear up" },
-  { id: "shiftDown", label: "Gear down" },
-  { id: "camera", label: "Camera" },
-  { id: "racingLine", label: "Racing line" },
-  { id: "mute", label: "Mute" },
-  { id: "autopilot", label: "Autopilot" },
-  { id: "mouseSteer", label: "Mouse steering" },
-  { id: "restart", label: "Restart" },
-  { id: "throttleHalf", label: "Half throttle (hold)" },
-  { id: "replay", label: "Instant replay" },
-  { id: "mfdPage", label: "Next MFD page" },
+  { id: "throttle", label: "油门" },
+  { id: "brake", label: "刹车" },
+  { id: "steerLeft", label: "左转" },
+  { id: "steerRight", label: "右转" },
+  { id: "boostHold", label: "增压（按住）" },
+  { id: "boostLatch", label: "增压（锁定）" },
+  { id: "aero", label: "主动空力 X / Z" },
+  { id: "shiftUp", label: "升挡" },
+  { id: "shiftDown", label: "降挡" },
+  { id: "camera", label: "视角" },
+  { id: "racingLine", label: "赛车线" },
+  { id: "mute", label: "静音" },
+  { id: "autopilot", label: "自动驾驶" },
+  { id: "mouseSteer", label: "鼠标转向" },
+  { id: "restart", label: "重开" },
+  { id: "throttleHalf", label: "半油门（按住）" },
+  { id: "replay", label: "即时回放" },
+  { id: "mfdPage", label: "下一页仪表" },
+  { id: "keysOverlay", label: "按键显示" },
 ];
 
 export const PAD_ACTIONS: readonly { id: PadAction; label: string }[] = [
-  { id: "shiftUp", label: "Gear up" },
-  { id: "shiftDown", label: "Gear down" },
-  { id: "boost", label: "Boost" },
-  { id: "aero", label: "Active aero X / Z" },
-  { id: "camera", label: "Camera" },
-  { id: "racingLine", label: "Racing line" },
-  { id: "restart", label: "Restart" },
-  { id: "pause", label: "Pause menu" },
-  { id: "mfd", label: "Open / close MFD" },
-  { id: "mfdPage", label: "Next MFD page" },
-  { id: "hud", label: "Show / hide HUD" },
+  { id: "shiftUp", label: "升挡" },
+  { id: "shiftDown", label: "降挡" },
+  { id: "boost", label: "增压" },
+  { id: "aero", label: "主动空力 X / Z" },
+  { id: "camera", label: "视角" },
+  { id: "racingLine", label: "赛车线" },
+  { id: "restart", label: "重开" },
+  { id: "pause", label: "暂停菜单" },
+  { id: "mfd", label: "打开/关闭仪表" },
+  { id: "mfdPage", label: "下一页仪表" },
+  { id: "hud", label: "显示/隐藏 HUD" },
 ];
 
 export const DEFAULT_KEY_BINDINGS: KeyBindings = {
@@ -96,6 +98,7 @@ export const DEFAULT_KEY_BINDINGS: KeyBindings = {
   throttleHalf: ["KeyF"],
   replay: ["KeyT"],
   mfdPage: ["Insert", "KeyI"],
+  keysOverlay: ["KeyH"],
 };
 
 /** Keys that cannot be bound: Esc opens the menu, "/" starts the /boost command */
@@ -119,7 +122,7 @@ export const DEFAULT_PAD_BUTTONS: PadButtonBindings = {
 };
 
 /** Window events the game loop fires for the HUD's own pad toggles (the MFD and the HUD listen for them) */
-export const HUD_TOGGLE_EVENT = { mfd: "lc:toggle-mfd", mfdPage: "lc:mfd-page", hud: "lc:toggle-hud" } as const;
+export const HUD_TOGGLE_EVENT = { mfd: "lc:toggle-mfd", mfdPage: "lc:mfd-page", hud: "lc:toggle-hud", keysOverlay: "lc:show-keys-overlay" } as const;
 
 /** Fixed standard-mapping axes / buttons for the pedals and steering on a controller */
 export const PAD_THROTTLE_BUTTON = 7; // RT
@@ -146,7 +149,7 @@ export const STANDARD_BUTTON_NAMES: Record<number, string> = {
 };
 
 export const padButtonLabel = (button: number | null | undefined) =>
-  button === null || button === undefined ? "—" : (STANDARD_BUTTON_NAMES[button] ?? `Button ${button}`);
+  button === null || button === undefined ? "—" : (STANDARD_BUTTON_NAMES[button] ?? `按键 ${button}`);
 
 /** Readable label for a KeyboardEvent.code */
 export function keyLabel(code: string | undefined): string {

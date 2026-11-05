@@ -200,10 +200,10 @@ export function resolveAiTuning(key: AiTuningKey, library: AiTuningLibrary): Res
 // -------------------------------------------------------------------------------------------------
 
 export const AI_SKILL_LEVELS = [
-  { id: 'rookie', label: 'Rookie', value: 0 },
-  { id: 'amateur', label: 'Amateur', value: 35 },
-  { id: 'pro', label: 'Pro', value: 70 },
-  { id: 'alien', label: 'Alien', value: 100 },
+  { id: 'rookie', label: '新手', value: 0 },
+  { id: 'amateur', label: '业余', value: 35 },
+  { id: 'pro', label: '职业', value: 70 },
+  { id: 'alien', label: '外星人', value: 100 },
 ] as const;
 
 /** Pro: the field as it drove before skill levels existed */

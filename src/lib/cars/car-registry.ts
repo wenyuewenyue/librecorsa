@@ -33,16 +33,16 @@ export interface CarDefinition {
 }
 
 export const CAR_CLASSES: readonly CarClass[] = [
-  { id: "f1-2026", title: "F1 2026", sub: "Active aero · hybrid", color: "#CCFF00" },
-  { id: "gt3", title: "GT3", sub: "ABS · TC", color: "#00E5FF" },
+  { id: "f1-2026", title: "F1 2026 方程式", sub: "主动空力 · 混动", color: "#CCFF00" },
+  { id: "gt3", title: "GT3 房车赛", sub: "ABS · TC", color: "#00E5FF" },
 ];
 
 export const CARS: readonly CarDefinition[] = [
   {
     id: "vf26",
     classId: "f1-2026",
-    title: "FA-26 Prototype",
-    sub: "Curvilinear 2026 model · active aero",
+    title: "FA-26 原型车",
+    sub: "2026 曲线模型 · 主动空力",
     badge: "FA-26",
     physics: "vf26",
     sound: AMR26_SOUND,
@@ -50,8 +50,8 @@ export const CARS: readonly CarDefinition[] = [
   {
     id: "f12026-car",
     classId: "f1-2026",
-    title: "FA-26 Rigid-Body",
-    sub: "6-DOF rigid-body · track colliders · DRS",
+    title: "FA-26 刚体版",
+    sub: "6-DOF 刚体 · 赛道碰撞体 · DRS",
     badge: "6-DOF",
     physics: "f12026-car",
     sound: AMR26_SOUND,
@@ -59,8 +59,8 @@ export const CARS: readonly CarDefinition[] = [
   {
     id: "amg-gt3",
     classId: "gt3",
-    title: "Mercedes-AMG GT3",
-    sub: "GT3 Pro · 6.2L V8 · Multi-stage ABS / TC",
+    title: "梅赛德斯-AMG GT3",
+    sub: "GT3 Pro · 6.2L V8 · 多级 ABS / TC",
     badge: "GT3 PRO",
     physics: "amg-gt3",
     sound: AMG_GT3_SOUND,

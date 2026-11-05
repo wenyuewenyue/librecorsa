@@ -38,9 +38,9 @@ const STEER_DETECT = 0.12;
 const PEDAL_DETECT = 0.2;
 
 const PROMPTS: Record<CalTarget, { rest: string; act: string }> = {
-  steer: { rest: "Hold the wheel straight ahead, then press Continue.", act: "Now turn the wheel about 90° to the LEFT and hold it." },
-  throttle: { rest: "Take your foot off the throttle, then press Continue.", act: "Press the throttle all the way down, then release it." },
-  brake: { rest: "Take your foot off the brake, then press Continue.", act: "Press the brake all the way down, then release it." },
+  steer: { rest: "把方向盘扶正，然后按继续。", act: "现在把方向盘向左转约 90° 并保持。" },
+  throttle: { rest: "把脚从油门上移开，然后按继续。", act: "把油门踩到底，然后松开。" },
+  brake: { rest: "把脚从刹车上移开，然后按继续。", act: "把刹车踩到底，然后松开。" },
 };
 
 /**
@@ -134,7 +134,7 @@ const AxisCalibrator: React.FC<{
               setStage("act");
             }}
           >
-            Continue
+            继续
           </SolidPill>
         ) : target !== "steer" && canSavePedal ? (
           <SolidPill
@@ -146,11 +146,11 @@ const AxisCalibrator: React.FC<{
               onPedal(target, { padId: l.padId, axis: l.axis, idle: l.base, full: l.peak });
             }}
           >
-            Save
+            保存
           </SolidPill>
         ) : null}
         <PillAction onClick={onCancel} className="h-[34px]!">
-          Cancel
+          取消
         </PillAction>
       </div>
     </div>
@@ -214,27 +214,27 @@ function FfbBridgeStatus({ status }: { status: FfbStatus }) {
   if (status.connection === "replaced") {
     return (
       <p role="status" className="m-0 rounded-[14px] bg-[#FFB300]/10 px-3.5 py-2.5 text-[13px] leading-relaxed text-[#FFB300]">
-        Another tab took over the wheel. Close it, or switch force feedback off and on here to take it back.
+        另一个标签页接管了方向盘。请关闭它，或在此处开关一次力反馈以夺回控制。
       </p>
     );
   }
   if (status.connection === "unreachable") {
     return (
       <p role="status" className="m-0 rounded-[14px] bg-[#FFB300]/10 px-3.5 py-2.5 text-[13px] leading-relaxed text-[#FFB300]">
-        Bridge not running. In a terminal in the project folder run{" "}
-        <code className="font-f1-mono text-[12px] font-bold text-[#F5F7FA]">npm run ffb</code> (Windows) and keep it open;
-        this page connects within a few seconds.
+        桥接程序未运行。请在项目文件夹的终端中运行{" "}
+        <code className="font-f1-mono text-[12px] font-bold text-[#F5F7FA]">npm run ffb</code>（Windows）并保持打开；
+        本页面会在几秒内连接。
       </p>
     );
   }
   const [color, text] =
     status.connection !== "connected"
-      ? ["#8E96AA", "Looking for the bridge on this PC…"]
+      ? ["#8E96AA", "正在本机寻找桥接程序…"]
       : status.error
         ? ["#FFB300", status.error]
         : status.device
-          ? ["#22C55E", `Driving ${status.device}`]
-          : ["#8E96AA", "Bridge connected · waiting for the wheel…"];
+          ? ["#22C55E", `正在驱动 ${status.device}`]
+          : ["#8E96AA", "桥接已连接 · 等待方向盘…"];
   return (
     <p role="status" className="m-0 flex items-center gap-2 font-f1-mono text-[12px] font-bold" style={{ color }}>
       <span aria-hidden className="h-[7px] w-[7px] shrink-0 rounded-full" style={{ background: color, boxShadow: `0 0 8px ${color}` }} />
@@ -255,12 +255,12 @@ function HidFfbStatusLine({ status, on }: { status: WebHidFfbStatus; on: boolean
   const browserUnsupported = status.state === "unsupported" && status.device === null;
   const [color, text] =
     status.state === "ready"
-      ? ["#22C55E", `Driving ${status.device ?? "the wheel"} over WebHID`]
+      ? ["#22C55E", `正通过 WebHID 驱动 ${status.device ?? "方向盘"}`]
       : status.state === "connecting"
-        ? ["#8E96AA", status.device ? `Connecting to ${status.device}…` : "Connecting…"]
+        ? ["#8E96AA", status.device ? `正在连接 ${status.device}…` : "正在连接…"]
         : fatal
-          ? ["#FF2A3C", `${status.device ? `${status.device}: ` : ""}${status.message ?? "WebHID force feedback failed"}`]
-          : ["#FFB300", status.message ?? "No wheel paired yet: click Connect to pick it"];
+          ? ["#FF2A3C", `${status.device ? `${status.device}：` : ""}${status.message ?? "WebHID 力反馈失败"}`]
+          : ["#FFB300", status.message ?? "尚未配对方向盘：点击连接以选择"];
   const canConnect = !browserUnsupported && status.state !== "ready" && status.state !== "connecting";
   return (
     <div className="flex flex-col items-start gap-1.5 px-2 pt-1">
@@ -269,11 +269,11 @@ function HidFfbStatusLine({ status, on }: { status: WebHidFfbStatus; on: boolean
         {text}
       </p>
       {fatal && !browserUnsupported ? (
-        <Hint>WebHID switched off; force feedback goes through the bridge.{on ? "" : " Switch it on again to retry."}</Hint>
+        <Hint>WebHID 已关闭；力反馈改走桥接程序。{on ? "" : " 重新打开可重试。"}</Hint>
       ) : null}
       {on && canConnect ? (
         <SolidPill tone="volt" onClick={connectHidWheel}>
-          Connect wheel
+          连接方向盘
         </SolidPill>
       ) : null}
     </div>
@@ -387,7 +387,7 @@ export const WheelStep: React.FC<SetupStepProps> = ({ settings, onChangeSettings
         <SubHead>{label}</SubHead>
         <span className="flex min-w-0 items-center gap-2.5">
           <span className="truncate font-f1-mono text-[11px] font-bold text-[#8E96AA]">
-            {bound ? `${shortPad(bound.padId)} · axis ${bound.axis}` : "not set"}
+            {bound ? `${shortPad(bound.padId)} · 轴 ${bound.axis}` : "未设置"}
           </span>
           <SolidPill
             disabled={calibrating !== null && calibrating !== target}
@@ -397,7 +397,7 @@ export const WheelStep: React.FC<SetupStepProps> = ({ settings, onChangeSettings
             }}
             className={calibrating === target ? "lc-listen" : ""}
           >
-            {bound ? "Recalibrate" : "Calibrate"}
+            {bound ? "重新校准" : "校准"}
           </SolidPill>
         </span>
       </div>
@@ -409,7 +409,7 @@ export const WheelStep: React.FC<SetupStepProps> = ({ settings, onChangeSettings
     </div>
   );
 
-  const notConnected = <Hint>Device not connected</Hint>;
+  const notConnected = <Hint>设备未连接</Hint>;
   const customActive = customRotation || !(WHEEL_ROTATION_PRESETS as readonly number[]).includes(w.rotationDeg);
   const rotationPill = (active: boolean) =>
     `min-h-[40px] flex-1 cursor-pointer rounded-full border px-1.5 font-f1-mono text-[12px] font-extrabold transition-colors duration-200 ${
@@ -424,12 +424,12 @@ export const WheelStep: React.FC<SetupStepProps> = ({ settings, onChangeSettings
       style={{ gridTemplateColumns: "repeat(auto-fit, minmax(min(420px, 100%), 1fr))" }}
     >
       <div className="flex min-w-0 flex-col gap-4">
-        <SetupCard label="Wheel base">
+        <SetupCard label="方向盘底座">
           <div className="grid grid-cols-2 gap-2">
             {(
               [
-                { id: "direct_drive", title: "Direct drive", sub: "Fanatec DD, Moza, Simucube, Simagic… · raw, unfiltered" },
-                { id: "belt_gear", title: "Belt / gear", sub: "Logitech, Thrustmaster, CSL Elite… · light filter" },
+                { id: "direct_drive", title: "直驱", sub: "Fanatec DD、Moza、Simucube、Simagic… · 原始、无滤波" },
+                { id: "belt_gear", title: "皮带 / 齿轮", sub: "Logitech、Thrustmaster、CSL Elite… · 轻滤波" },
               ] as const
             ).map((t) => (
               <Choice
@@ -444,7 +444,7 @@ export const WheelStep: React.FC<SetupStepProps> = ({ settings, onChangeSettings
         </SetupCard>
 
         <SetupCard
-          label="Steering"
+          label="转向"
           action={
             <SolidPill
               tone="volt"
@@ -453,26 +453,26 @@ export const WheelStep: React.FC<SetupStepProps> = ({ settings, onChangeSettings
                 setCalibrating("steer");
               }}
             >
-              Calibrate all
+              全部校准
             </SolidPill>
           }
         >
           {pads.length === 0 ? (
-            <Hint className="text-[13px]!">No wheel found yet. Press a button on the wheel to wake it up.</Hint>
+            <Hint className="text-[13px]!">尚未找到方向盘。按方向盘上的按键将其唤醒。</Hint>
           ) : !w.throttle || !w.brake ? (
             <p className="m-0 rounded-[14px] bg-[#FFB300]/10 px-3.5 py-2.5 text-[13px] text-[#FFB300]">
-              Pedals not set up yet: press <strong>Calibrate all</strong> to set steering, throttle and brake in one go.
+              踏板尚未设置：按<strong>全部校准</strong>可一次设置转向、油门和刹车。
             </p>
           ) : null}
           {calRow(
             "steer",
-            "Steering axis",
+            "转向轴",
             w.steer,
             steer ? (
               <TrackMeter
                 compact
                 centered
-                label="Wheel"
+                label="方向盘"
                 value={steer.norm}
                 color="#00E5FF"
                 detail={`${steer.deg >= 0 ? "" : "−"}${Math.abs(Math.round(steer.deg))}°`}
@@ -482,7 +482,7 @@ export const WheelStep: React.FC<SetupStepProps> = ({ settings, onChangeSettings
             )
           )}
           <div className="flex flex-col gap-2.5 border-t border-[#262B3D] pt-3">
-            <SubHead>Rotation · lock to lock</SubHead>
+            <SubHead>转向角度 · 左右锁止</SubHead>
             <div className="flex gap-1.5">
               {WHEEL_ROTATION_PRESETS.map((deg) => (
                 <button
@@ -504,12 +504,12 @@ export const WheelStep: React.FC<SetupStepProps> = ({ settings, onChangeSettings
                 onClick={() => setCustomRotation(true)}
                 className={rotationPill(customActive)}
               >
-                Custom
+                自定义
               </button>
             </div>
             {customActive ? (
               <TyreSlider
-                label="Rotation"
+                label="转向角度"
                 value={w.rotationDeg}
                 limits={{ min: 180, max: 2520, step: 10 }}
                 format={(v) => `${v.toFixed(0)}°`}
@@ -517,31 +517,31 @@ export const WheelStep: React.FC<SetupStepProps> = ({ settings, onChangeSettings
               />
             ) : null}
             <Hint>
-              Match your wheel driver&apos;s rotation. Steering is 1:1 up to the car&apos;s lock ({CAR_WHEEL_LOCKS_DEG.vf26}°
-              F1, {CAR_WHEEL_LOCKS_DEG["amg-gt3"]}° GT3); a base with less rotation still reaches full lock.
+              请与方向盘驱动中的转向角度一致。转向在赛车锁止角度内为 1:1（F1 为 {CAR_WHEEL_LOCKS_DEG.vf26}°，
+              GT3 为 {CAR_WHEEL_LOCKS_DEG["amg-gt3"]}°）；底座角度更小仍可打满方向。
             </Hint>
           </div>
           <AutoGrid min={180} className="gap-x-4 gap-y-1">
             <TyreSlider
-              label="Centre dead zone"
+              label="中心死区"
               value={Math.round(w.steerDeadzone * 1000) / 10}
               limits={{ min: 0, max: 10, step: 0.5 }}
               format={(v) => `${v.toFixed(1)} %`}
               onChange={(v) => setWheel({ steerDeadzone: v / 100 })}
             />
             <TyreSlider
-              label="Input filter"
+              label="输入滤波"
               value={Math.round(w.steerSmoothingS * 1000)}
               limits={{ min: 0, max: 80, step: 5 }}
-              format={(v) => (v === 0 ? "Off" : `${v.toFixed(0)} ms`)}
+              format={(v) => (v === 0 ? "关闭" : `${v.toFixed(0)} ms`)}
               onChange={(v) => setWheel({ steerSmoothingS: v / 1000 })}
             />
           </AutoGrid>
         </SetupCard>
 
         <SetupCard
-          label="Buttons · paddles, rim, button box"
-          action={<PillAction onClick={() => setWheel({ buttons: emptyWheelButtons() })}>Clear</PillAction>}
+          label="按键 · 拨片、盘圈、按键盒"
+          action={<PillAction onClick={() => setWheel({ buttons: emptyWheelButtons() })}>清除</PillAction>}
         >
           <AutoGrid min={260} className="gap-x-4 gap-y-0.5">
             {PAD_ACTIONS.map(({ id, label }) => {
@@ -551,33 +551,33 @@ export const WheelStep: React.FC<SetupStepProps> = ({ settings, onChangeSettings
                 <BindRow key={id} label={label} listening={listening}>
                   <button
                     type="button"
-                    aria-label={b || listening ? undefined : `Bind ${label}`}
+                    aria-label={b || listening ? undefined : `绑定 ${label}`}
                     onClick={() => setCapturing(listening ? null : id)}
                     className={`${bindKeyClass(listening ? "listening" : b ? "bound" : "empty", "min-w-[96px]")} h-[32px]! text-[11px]!`}
                   >
-                    {listening ? "PRESS…" : b ? `Button ${b.button}` : "+"}
+                    {listening ? "按下…" : b ? `按键 ${b.button}` : "+"}
                   </button>
                 </BindRow>
               );
             })}
           </AutoGrid>
           {capturing ? (
-            <StatusPill tone="live">Press a button on any device · Esc cancels</StatusPill>
+            <StatusPill tone="live">在任意设备上按一个按键 · Esc 取消</StatusPill>
           ) : (
-            <Hint>Gear paddles and a pause button are the essentials.</Hint>
+            <Hint>换挡拨片和暂停按键是必备的。</Hint>
           )}
         </SetupCard>
       </div>
 
       <div className="flex min-w-0 flex-col gap-4">
         <SetupCard
-          label="Force feedback"
+          label="力反馈"
           action={
             <button
               type="button"
               role="switch"
               aria-checked={w.ffbEnabled}
-              aria-label="Force feedback"
+              aria-label="力反馈"
               onClick={() => setWheel({ ffbEnabled: !w.ffbEnabled })}
               className={`relative h-[30px] w-16 shrink-0 cursor-pointer rounded-full border-0 transition-colors duration-200 ${
                 w.ffbEnabled ? "bg-[#22C55E]" : "bg-[#1B1F2B] shadow-[inset_0_0_0_1px_#262B3D]"
@@ -589,7 +589,7 @@ export const WheelStep: React.FC<SetupStepProps> = ({ settings, onChangeSettings
                   w.ffbEnabled ? "left-2.5 text-[#08090D]" : "right-2.5 text-[#8E96AA]"
                 }`}
               >
-                {w.ffbEnabled ? "ON" : "OFF"}
+                {w.ffbEnabled ? "开" : "关"}
               </span>
               <span
                 aria-hidden
@@ -606,11 +606,11 @@ export const WheelStep: React.FC<SetupStepProps> = ({ settings, onChangeSettings
             <>
               <div className="rounded-[16px] border border-[#262B3D] bg-[#08090D] p-3">
                 <Toggle
-                  label="Browser force feedback over WebHID (USB HID PID direct-drive bases)"
+                  label="浏览器通过 WebHID 的力反馈（USB HID PID 直驱底座）"
                   detail={
                     hidBrowserUnsupported
-                      ? (hid.message ?? "WebHID is not available in this browser")
-                      : "Drives USB HID PID wheels directly from Chrome/Edge with no external helper. Falls back to the local bridge when off."
+                      ? (hid.message ?? "此浏览器不支持 WebHID")
+                      : "无需外部辅助程序，直接从 Chrome/Edge 驱动 USB HID PID 方向盘。关闭时回退到本地桥接程序。"
                   }
                   checked={w.hidFfb && !hidBrowserUnsupported}
                   disabled={hidBrowserUnsupported}
@@ -628,57 +628,57 @@ export const WheelStep: React.FC<SetupStepProps> = ({ settings, onChangeSettings
               {!w.hidFfb || hidBrowserUnsupported || ffb.connection === "connected" ? <FfbBridgeStatus status={ffb} /> : null}
               <AutoGrid min={190} className="gap-x-[18px] gap-y-1">
                 <TyreSlider
-                  label="Strength"
+                  label="强度"
                   value={Math.round(w.ffbGain * 100)}
                   limits={{ min: 0, max: 200, step: 5 }}
                   format={(v) => `${v.toFixed(0)} %`}
                   onChange={(v) => setWheel({ ffbGain: v / 100 })}
                 />
                 <TyreSlider
-                  label="Minimum force"
+                  label="最小力"
                   value={Math.round(w.ffbMinForce * 100)}
                   limits={{ min: 0, max: 20, step: 1 }}
-                  format={(v) => (v === 0 ? "Off" : `${v.toFixed(0)} %`)}
+                  format={(v) => (v === 0 ? "关闭" : `${v.toFixed(0)} %`)}
                   onChange={(v) => setWheel({ ffbMinForce: v / 100 })}
                 />
                 <TyreSlider
-                  label="Kerb vibration"
+                  label="路肩震动"
                   value={Math.round(w.ffbKerb * 100)}
                   limits={{ min: 0, max: 100, step: 5 }}
-                  format={(v) => (v === 0 ? "Off" : `${v.toFixed(0)} %`)}
+                  format={(v) => (v === 0 ? "关闭" : `${v.toFixed(0)} %`)}
                   onChange={(v) => setWheel({ ffbKerb: v / 100 })}
                 />
                 <TyreSlider
-                  label="ABS vibration"
+                  label="ABS 震动"
                   value={Math.round(w.ffbAbs * 100)}
                   limits={{ min: 0, max: 100, step: 5 }}
-                  format={(v) => (v === 0 ? "Off" : `${v.toFixed(0)} %`)}
+                  format={(v) => (v === 0 ? "关闭" : `${v.toFixed(0)} %`)}
                   onChange={(v) => setWheel({ ffbAbs: v / 100 })}
                 />
                 <TuningSlider
-                  label="Damping"
+                  label="阻尼"
                   value={Math.round(w.ffbDamping * 100)}
                   min={0}
                   max={100}
                   step={1}
-                  format={(v) => (v === 0 ? "Off" : `${v} %`)}
-                  hint="Resists fast rim movement and steadies the wheel at speed"
+                  format={(v) => (v === 0 ? "关闭" : `${v} %`)}
+                  hint="抑制盘圈快速转动，高速时稳定方向盘"
                   onChange={(v) => setWheel({ ffbDamping: v / 100 })}
                 />
                 <TuningSlider
-                  label="Smoothing"
+                  label="平滑"
                   value={Math.round(w.ffbFilterS * 1000)}
                   min={0}
                   max={50}
                   step={1}
-                  format={(v) => (v === 0 ? "0 = raw" : `${v} ms`)}
-                  hint="Low-pass filter on the force. 0 = raw"
+                  format={(v) => (v === 0 ? "0 = 原始" : `${v} ms`)}
+                  hint="力反馈低通滤波。0 = 原始"
                   onChange={(v) => setWheel({ ffbFilterS: v / 1000 })}
                 />
               </AutoGrid>
               <div className="flex flex-wrap items-center gap-2">
                 <SolidPill disabled={!ffbReady} onClick={() => wheelFfb.test(w.ffbInvert)} className="h-10!">
-                  Test direction
+                  测试方向
                 </SolidPill>
                 <button
                   type="button"
@@ -689,32 +689,30 @@ export const WheelStep: React.FC<SetupStepProps> = ({ settings, onChangeSettings
                       : "border border-[#262B3D] bg-[#F5F7FA]/[0.08] text-[#F5F7FA] hover:border-[#3A4157]"
                   }`}
                 >
-                  {w.ffbInvert ? "Inverted" : "Invert"}
+                  {w.ffbInvert ? "已反向" : "反向"}
                 </button>
               </div>
               <Hint>
-                Hold the rim and press Test: it should pull right for a second, then left. If it pulls left first, switch
-                on Invert. The wheel&apos;s overall strength and damping stay in its own software (Moza Pit House, Fanatec
-                control panel…); turn its centring spring off there.
+                握住盘圈并按测试：应先向右拉一秒，再向左拉。如果先向左拉，请打开反向。方向盘的整体强度和阻尼保留在其自带软件中（Moza Pit House、Fanatec
+                控制面板…）；请在那里关闭回正弹簧。
               </Hint>
             </>
           ) : (
             <Hint className="text-[13px]!">
-              Switch Force Feedback on and click <strong>Connect wheel</strong> to drive your wheel directly over WebHID
-              in Chrome/Edge (or run <code className="font-f1-mono text-[12px] font-bold text-[#F5F7FA]">npm run ffb</code>{" "}
-              for the local bridge).
+              打开力反馈并点击<strong>连接方向盘</strong>，即可在 Chrome/Edge 中直接通过 WebHID 驱动方向盘（或运行 <code className="font-f1-mono text-[12px] font-bold text-[#F5F7FA]">npm run ffb</code>{" "}
+              使用本地桥接程序）。
             </Hint>
           )}
 
           <div className="flex flex-col gap-2.5 rounded-[18px] border border-[#262B3D] bg-[#08090D] p-3.5">
-            <SubHead>Telemetry out</SubHead>
+            <SubHead>遥测输出</SubHead>
             <Toggle
-              label="Send UDP telemetry through the bridge (SimHub, dashboards, bass shakers)"
+              label="通过桥接程序发送 UDP 遥测（SimHub、仪表盘、低频震动器）"
               checked={w.telemetryOut}
               onChange={() => setWheel({ telemetryOut: !w.telemetryOut })}
             />
             <div className={`flex items-center justify-between gap-3 px-2 ${w.telemetryOut ? "" : "opacity-40"}`}>
-              <span className="font-f1-mono text-[11px] font-bold text-[#8E96AA]">UDP port</span>
+              <span className="font-f1-mono text-[11px] font-bold text-[#8E96AA]">UDP 端口</span>
               <input
                 type="number"
                 inputMode="numeric"
@@ -733,34 +731,34 @@ export const WheelStep: React.FC<SetupStepProps> = ({ settings, onChangeSettings
               />
             </div>
             <Hint>
-              Needs the bridge running: <span className="font-f1-mono text-[#F5F7FA]">npm run ffb</span>
+              需要桥接程序运行：<span className="font-f1-mono text-[#F5F7FA]">npm run ffb</span>
             </Hint>
           </div>
         </SetupCard>
 
-        <SetupCard label="Pedals">
+        <SetupCard label="踏板">
           {calRow(
             "throttle",
-            "Throttle",
+            "油门",
             w.throttle,
-            throttle !== null ? <TrackMeter compact label="Throttle" value={throttle} /> : notConnected
+            throttle !== null ? <TrackMeter compact label="油门" value={throttle} /> : notConnected
           )}
           {calRow(
             "brake",
-            "Brake",
+            "刹车",
             w.brake,
-            brake !== null ? <TrackMeter compact label="Brake" value={brake} color="#FF2A3C" /> : notConnected
+            brake !== null ? <TrackMeter compact label="刹车" value={brake} color="#FF2A3C" /> : notConnected
           )}
           <div className="flex flex-col gap-1 border-t border-[#262B3D] pt-2.5">
             <TyreSlider
-              label="Brake curve"
+              label="刹车曲线"
               value={w.brakeGamma}
               limits={{ min: 0.5, max: 2.5, step: 0.1 }}
-              format={(v) => (Math.abs(v - 1) < 0.05 ? "Linear" : v > 1 ? `Progressive ${v.toFixed(1)}` : `Aggressive ${v.toFixed(1)}`)}
+              format={(v) => (Math.abs(v - 1) < 0.05 ? "线性" : v > 1 ? `渐进 ${v.toFixed(1)}` : `激进 ${v.toFixed(1)}`)}
               onChange={(v) => setWheel({ brakeGamma: v })}
             />
             <Hint className="px-2">
-              Load-cell brakes usually feel best linear; potentiometer pedals often like 1.3–1.6. A clutch is not needed.
+              压力传感器刹车通常线性最好；电位器踏板常用 1.3–1.6。不需要离合器。
             </Hint>
           </div>
         </SetupCard>

@@ -12,6 +12,7 @@ import type { RacingLineId, RunoffStyle, TrackSamplePoint } from "@/types/f1";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import { assetProgress } from "@/lib/loading/asset-progress";
+import { getPreloadedTrackScene } from "@/lib/loading/track-glb-cache";
 
 export interface BuiltRwandaScene {
   sceneGroup: THREE.Group;
@@ -105,12 +106,7 @@ function loadTrackGlb(
   // `?colliders=1`: draw the physics surfaces (by type) and barriers over the scan, to check them against it
   const showColliders = new URLSearchParams(window.location.search).get("colliders") === "1";
   assetProgress.begin("track");
-  // Circuit scans are meshopt-compressed (scripts/compress-track-glb.mjs)
-  new GLTFLoader()
-    .setMeshoptDecoder(MeshoptDecoder)
-    .loadAsync(withBasePath(url), (event) => assetProgress.progress("track", event))
-    .then((gltf) => {
-      const root = gltf.scene;
+  const processRoot = (root: THREE.Object3D) => {
       root.name = "Rwanda2026Track";
       const box = new THREE.Box3();
       const size = new THREE.Vector3();
@@ -170,7 +166,20 @@ function loadTrackGlb(
       // Hide the procedural stand-in geometry once the authored circuit is live
       fallbackGroup.visible = false;
       assetProgress.done("track");
-    })
+    };
+  // A scene the background preloader already parsed skips download + parse
+  // entirely (except in the colliders debug view, whose material swap would
+  // pollute the cache).
+  const cached = !showColliders ? getPreloadedTrackScene(url) : null;
+  if (cached) {
+    processRoot(cached);
+    return;
+  }
+  // Circuit scans are meshopt-compressed (scripts/compress-track-glb.mjs)
+  new GLTFLoader()
+    .setMeshoptDecoder(MeshoptDecoder)
+    .loadAsync(withBasePath(url), (event) => assetProgress.progress("track", event))
+    .then((gltf) => processRoot(gltf.scene))
     .catch((err) => {
       console.warn("Using fallback procedural track geometry:", err);
       assetProgress.fail("track");
@@ -512,10 +521,26 @@ export function buildRwandaCircuitScene(
   fallbackGroup.name = "FallbackProceduralGroup";
   sceneGroup.add(fallbackGroup);
 
+  // When the GLB scene is already parsed in the cache (background preloader
+  // or the TrackGate parse), the fallback geometry below is hidden the
+  // instant loadTrackGlb runs, so building it synchronously on every
+  // switch only adds a freeze and never shows on screen. Skip it in
+  // that case; the colliders debug view still needs it, so it is exempt.
+  // The racing line, start lights and jet (sceneGroup, not fallbackGroup)
+  // are built unconditionally below.
+  const glbUrl = track.meshUrl ?? "/tracks/rwanda/rwanda_2026.glb";
+  const showColliders =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("colliders") === "1";
+  const glbCached = !showColliders && getPreloadedTrackScene(glbUrl) !== null;
+  // Needed by the GLB asphalt material at the end even when the fallback
+  // ribbon (which normally creates it) is skipped; cached per track.
+  const sheenMask = createRacingLineMask(track);
 
   const samples = track.samples;
   const n = samples.length;
 
+  if (!glbCached) {
   // ============================================================================
   // 1. FALLBACK ASPHALT TRACK RIBBON MESH (Active before the circuit GLB finishes loading)
   // ============================================================================
@@ -751,6 +776,7 @@ export function buildRwandaCircuitScene(
     })
   );
   fallbackGroup.add(kerbMesh);
+  } // end if (!glbCached): fallback ribbon / runoff / kerbs
 
   // ============================================================================
   // 3. DYNAMIC 3D DASHED RACING & BRAKING LINE (Along exact fast_lane.ai coordinates)
@@ -957,7 +983,52 @@ export function buildRwandaCircuitScene(
   const attachStartLightsToGantry = (root: THREE.Object3D) => {
     root.updateMatrixWorld(true);
     const assembly = root.getObjectByName("Prop_StartLights_0");
-    if (!assembly) return;
+    if (!assembly) {
+      // Converted circuits (Suzuka / Shanghai / Motegi) have no authored
+      // start-light assembly, so the pods would otherwise hang in mid-air
+      // with no support at all. Give them a side post + arm instead:
+      // the post stands outside the road (half width + 2 m, sunk 2 m so
+      // it stays grounded even if the runoff drops a little), the arm
+      // reaches in to the pod row. Pod positions are unchanged, and
+      // Rwanda (which has an assembly) never takes this branch.
+      if (!sceneGroup.getObjectByName("StartLightSupport")) {
+        const supportMat = new THREE.MeshStandardMaterial({
+          color: 0x1f2937,
+          roughness: 0.6,
+          metalness: 0.2,
+        });
+        const podCenterRight = 2.2;
+        const podHeight = 5.75;
+        const postRight = podCenterRight + startSample.width * 0.5 + 2.0;
+        const rightFlat = new THREE.Vector3(startRight.x, 0, startRight.z).normalize();
+        const postHeight = podHeight + 2.25;
+        const post = new THREE.Mesh(
+          new THREE.BoxGeometry(0.35, postHeight, 0.35),
+          supportMat
+        );
+        post.name = "StartLightSupportPost";
+        post.position.copy(startSample.position).addScaledVector(startRight, postRight);
+        post.position.y = startSample.position.y - 2 + postHeight * 0.5;
+        const armLength = postRight - podCenterRight;
+        const arm = new THREE.Mesh(
+          new THREE.BoxGeometry(armLength, 0.25, 0.25),
+          supportMat
+        );
+        arm.name = "StartLightSupportArm";
+        arm.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), rightFlat);
+        arm.position.copy(startSample.position).addScaledVector(
+          startRight,
+          (postRight + podCenterRight) * 0.5
+        );
+        arm.position.y = startSample.position.y + podHeight;
+        const support = new THREE.Group();
+        support.name = "StartLightSupport";
+        support.add(post);
+        support.add(arm);
+        sceneGroup.add(support);
+      }
+      return;
+    }
     const box = new THREE.Box3().setFromObject(assembly);
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
@@ -968,6 +1039,7 @@ export function buildRwandaCircuitScene(
     placePods(center, depth * 0.5, width / 5);
   };
 
+  if (!glbCached) {
   // ============================================================================
   // 5. COLLISION-VERIFIED TRACKSIDE STRUCTURES (In fallbackGroup for headless verification)
   // ============================================================================
@@ -1127,6 +1199,7 @@ export function buildRwandaCircuitScene(
     pavGroup.add(tentPeak);
     fallbackGroup.add(pavGroup);
   }
+  } // end if (!glbCached): trackside structures
 
   // RwandAir Jetliner Banking in the Sky near Bugesera International Airport
   const jetGroup = new THREE.Group();

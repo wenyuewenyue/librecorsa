@@ -14,24 +14,24 @@ type Level = "beginner" | "intermediate" | "sim";
 const LEVELS: { id: Level; title: string; preset: AssistPreset; racingLine: boolean; points: string[] }[] = [
   {
     id: "beginner",
-    title: "Beginner",
+    title: "新手",
     preset: "assisted",
     racingLine: true,
-    points: ["Full traction control and ABS", "Racing line with braking zones", "Steering assist on a controller"],
+    points: ["全套牵引力控制与 ABS", "带刹车区的赛车线", "手柄转向辅助"],
   },
   {
     id: "intermediate",
-    title: "Intermediate",
+    title: "中级",
     preset: "semi_pro",
     racingLine: true,
-    points: ["Light traction control and ABS", "Racing line shown", "Mistakes are yours to catch"],
+    points: ["轻度牵引力控制与 ABS", "显示赛车线", "失误要靠自己挽救"],
   },
   {
     id: "sim",
-    title: "Sim",
+    title: "模拟",
     preset: "pro",
     racingLine: false,
-    points: ["No traction control, no ABS", "No racing line", "Real F1 power on cold tyres: be gentle"],
+    points: ["无牵引力控制，无 ABS", "无赛车线", "冷胎上的真正 F1 动力：请温柔对待"],
   },
 ];
 
@@ -96,38 +96,38 @@ export const AssistsStep: React.FC<SetupStepProps> = (p) => {
         })}
       </div>
 
-      <SetupCard label="Fine tune" className="gap-3!">
+      <SetupCard label="微调" className="gap-3!">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <span className="lc-title text-[15px] text-[#F5F7FA]">Traction control &amp; ABS</span>
+          <span className="lc-title text-[15px] text-[#F5F7FA]">牵引力控制与 ABS</span>
           <Segmented
-            label="Traction control and ABS"
+            label="牵引力控制与 ABS"
             className="w-full sm:w-auto sm:flex-[0_1_380px]"
             value={p.assistPreset}
             onChange={(id) => p.onChangeAssistPreset(id)}
             options={[
-              { id: "pro", label: "Off" },
+              { id: "pro", label: "关闭" },
               { id: "semi_pro", label: "TC + ABS" },
-              { id: "assisted", label: "Full" },
+              { id: "assisted", label: "完整" },
             ]}
           />
         </div>
         <AutoGrid min={300} className="gap-x-7 gap-y-1">
           <Toggle
-            label="Racing line"
-            detail={`Green to red braking guide on the track (${keyLabel(p.settings.keys.racingLine[0])})`}
+            label="赛车线"
+            detail={`赛道上的绿变红刹车指引（${keyLabel(p.settings.keys.racingLine[0])}）`}
             checked={p.showRacingLine}
             onChange={() => p.onSetRacingLine(!p.showRacingLine)}
           />
           {p.settings.device === "controller" ? (
             <Toggle
-              label="Controller steering assist"
-              detail="Keeps the front tyres at their grip limit"
+              label="手柄转向辅助"
+              detail="让前轮保持在抓地极限"
               checked={p.gamepadAssist}
               onChange={() => p.onSetGamepadAssist(!p.gamepadAssist)}
             />
           ) : null}
         </AutoGrid>
-        <Hint>Change any of these later from the pause menu (Esc).</Hint>
+        <Hint>之后可在暂停菜单（Esc）中更改这些设置。</Hint>
       </SetupCard>
     </div>
   );

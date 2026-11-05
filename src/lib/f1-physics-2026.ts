@@ -116,6 +116,7 @@ import {
 } from './sim/wet-tyres';
 import type { TrackSurfaceKind } from './sim/track-surfaces';
 import { BRAKE_DUCT_STEP, type ChassisSetup, clampChassisSetup, DEFAULT_CHASSIS_SETUP, pctScale, WING_CLICK_DEG } from './sim/car-setup';
+import { NO_BUFF, type BuffPack } from './sim/buff-pack';
 import { flyingExitSpeedMs, flyingStartPoint, type TyreVisualState } from './sim/simulator-car';
 import type { VehicleWheelState, WheelCornerIndex } from './sim/vehicle-types';
 import {
@@ -313,6 +314,8 @@ export class F1Physics2026 {
   private readonly wallQueryRadius = Math.max(...this.wallProbePoints.map(([x, z]) => Math.hypot(x, z))) + 0.5;
 
   public aeroPreset: AeroSetupPreset = 'balanced';
+  /** Activation-code buff multipliers (all 1 when no buff is active) */
+  public buff: BuffPack = NO_BUFF;
   private _assistPreset: DriverAssistPreset = 'semi_pro';
   public tcLevel = 5;
   public tc2Level = 6;
@@ -1374,7 +1377,7 @@ export class F1Physics2026 {
       // using the grip left over after its current cornering force
       // Front torque per wheel at pedal p is T·(bias + mig·p)·p with the migration, so the cap is the root of
       // mig·p² + bias·p − τ/T = 0 for the torque τ the tyre can take
-      const brakeTorqueFull = VF26_BRAKES.maxTorqueNm * VF26_BRAKES.powerMult * this.brakePowerScale;
+      const brakeTorqueFull = VF26_BRAKES.maxTorqueNm * VF26_BRAKES.powerMult * this.brakePowerScale * this.buff.brake;
       const bias0 = VF26_BRAKES.frontBias;
       const mig = VF26_BRAKES.migrationAtFullPedal;
       let pedalCap = 1;
@@ -1551,7 +1554,7 @@ export class F1Physics2026 {
     // ---- 6. Power unit & brakes (controls for the sub-steps) ----------------------
     this.updatePowerUnitControls(dt, throttle, brake);
     const effectiveFrontBias = computeDynamicBrakeMigration(this.liveBrakeBias, brake, this.liveBrakeMigration);
-    const brakeDemand = brake * VF26_BRAKES.maxTorqueNm * VF26_BRAKES.powerMult * this.brakePowerScale;
+    const brakeDemand = brake * VF26_BRAKES.maxTorqueNm * VF26_BRAKES.powerMult * this.brakePowerScale * this.buff.brake;
     const frontPerWheel = brakeDemand * effectiveFrontBias;
     const rearPerWheelDemand = brakeDemand * (1 - effectiveFrontBias);
     // Brake-by-wire: MGU-K harvest replaces part of the rear hydraulic torque. The BBW keeps the
@@ -1764,7 +1767,7 @@ export class F1Physics2026 {
     const rpm = drv.engineOmega * RADS2RPM;
     const speedKmh = Math.abs(this.vxMs) * 3.6;
 
-    if (drv.boostCooldownS > 0) drv.boostCooldownS = Math.max(0, drv.boostCooldownS - dt);
+    if (drv.boostCooldownS > 0) drv.boostCooldownS = Math.max(0, drv.boostCooldownS - dt * this.buff.boostRecharge);
     if (drv.boostRemainingS > 0) {
       drv.boostRemainingS = Math.max(0, drv.boostRemainingS - dt);
       if (drv.boostRemainingS === 0) {
@@ -1860,7 +1863,8 @@ export class F1Physics2026 {
       ice = coast;
     } else {
       const full = this.torqueLut.evaluate(rpm) * (1 + drv.boostBar);
-      ice = coast + (full - coast) * shapedThrottle;
+      const accelMult = Math.abs(this.vxMs) < this.buff.lowSpeedMs ? this.buff.lowSpeedAccel : 1;
+      ice = coast + (full - coast) * shapedThrottle * accelMult;
     }
     drv.iceTorqueNm = ice;
     const mguk = drv.shiftTimerS > 0 ? Math.min(0, drv.mgukTorqueNm) : drv.mgukTorqueNm;
@@ -1936,7 +1940,7 @@ export class F1Physics2026 {
           ? surfaceWetMultiplier(getActiveSurfaceTable()[SURFACE_KIND[contact.surfaceType] ?? 'road'].wetFriction, wet, this.realism.wetSeverity)
           : 1;
       w.surfaceFrictionMult =
-        contact.frictionMult * (sample.gripMultiplier ?? 1) * this.trackEvolutionSample.gripMultiplier * wetSurface;
+        contact.frictionMult * (sample.gripMultiplier ?? 1) * this.trackEvolutionSample.gripMultiplier * wetSurface * this.buff.grip;
       w.roadOffsetPrev = reset ? contact.zRoad + contact.bumpM - w.worldPos.y : w.roadOffset;
       w.roadOffset = contact.zRoad + contact.bumpM - w.worldPos.y;
     }
@@ -2052,9 +2056,9 @@ export class F1Physics2026 {
     const downWaked = frontWaked + rearWaked;
     const dragWaked = drag * wake.dragMultiplier;
 
-    this.aeroDownforceN = downWaked;
-    this.aeroFrontDownforceN = frontWaked;
-    this.aeroRearDownforceN = rearWaked;
+    this.aeroDownforceN = downWaked * this.buff.downforce;
+    this.aeroFrontDownforceN = frontWaked * this.buff.downforce;
+    this.aeroRearDownforceN = rearWaked * this.buff.downforce;
     this.aeroCopFrontPct = downWaked > 1 ? (100 * frontWaked) / downWaked : 50;
     this.aeroDragN = dragWaked;
     this.aeroPitchMomentNm = pitch * (down > 1 ? downWaked / down : 1);
@@ -2961,8 +2965,9 @@ export class F1Physics2026 {
     const lapTime = nowMs - this.currentLapStartMs;
     this.onSectorCompleted(3);
     this.currentLapStartMs = nowMs;
-    // Judged track limits: a lap that ends while an excursion is still being judged cannot count
-    const valid = this.lapValid && !(this.trackLimitsMode === 'judged' && (this.trackLimitsHold || this.lastObservation.outOfTrack));
+    // A lap that ends while an excursion was still being judged is no longer deleted:
+    // the lap recorder converts it to +3000 ms, so lastLapValid stays true here.
+    const valid = this.lapValid;
     if (lapTime > 45_000) {
       this.telemetry.lastLapTimeMs = lapTime;
       if (valid && (this.telemetry.bestLapTimeMs === null || lapTime < this.telemetry.bestLapTimeMs)) {
@@ -2976,7 +2981,11 @@ export class F1Physics2026 {
     this.telemetry.lapInvalid = false;
   }
 
-  /** Race control deleted the running lap (judged track limits) */
+  /**
+   * Legacy: no caller uses this any more. Whole-lap invalidation was abolished in
+   * favour of time penalties, so this method is kept only so older call sites and
+   * the SimulatorCar interface still compile; laps are penalised, never deleted.
+   */
   public invalidateLap(): void {
     this.lapValid = false;
     this.telemetry.lapInvalid = true;

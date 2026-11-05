@@ -2,7 +2,7 @@ import React from "react";
 
 export interface LibreCorsaLogoProps {
   /**
-   * - "full": emblem + LIBRECORSA wordmark + subtitle rule
+   * - "full": emblem + WY赛车 wordmark + subtitle rule
    * - "compact": emblem + wordmark (headers, the HUD)
    * - "mark": the emblem alone (favicon, wheel badge)
    */
@@ -14,16 +14,16 @@ export interface LibreCorsaLogoProps {
 }
 
 const SIZES = {
-  sm: { mark: "h-8 w-8", word: "text-lg", gap: "gap-2.5" },
-  md: { mark: "h-11 w-11", word: "text-2xl", gap: "gap-3" },
-  lg: { mark: "h-16 w-16", word: "text-[2.6rem]", gap: "gap-4" },
+  sm: { mark: "h-8 w-8", word: "text-2xl", gap: "gap-2.5", subtitle: "text-[13px]" },
+  md: { mark: "h-11 w-11", word: "text-4xl", gap: "gap-3", subtitle: "text-[15px]" },
+  lg: { mark: "h-16 w-16", word: "text-[3.8rem]", gap: "gap-4", subtitle: "text-[18px]" },
 } as const;
 
 /**
  * The LC emblem: a forward-leaning volt "L" with a white "C" nested in its corner like a car
  * taking an apex. The C's apex is painted as a red / white kerb and a cyan streak leaves the exit.
  */
-export const LibreCorsaMark: React.FC<{ className?: string; title?: string }> = ({ className = "h-10 w-10", title = "LibreCorsa" }) => {
+export const LibreCorsaMark: React.FC<{ className?: string; title?: string }> = ({ className = "h-10 w-10", title = "WY赛车" }) => {
   const uid = React.useId().replace(/:/g, "");
   return (
     <svg viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg" className={className} role="img" aria-label={title}>
@@ -67,7 +67,7 @@ export const LibreCorsaLogo: React.FC<LibreCorsaLogoProps> = ({
   variant = "full",
   size,
   className = "",
-  subtitle = "Open-source 500 Hz motorsport sim",
+  subtitle = "温越出品",
 }) => {
   if (variant === "mark") return <LibreCorsaMark className={className || "h-10 w-10"} />;
   const s = SIZES[size ?? (variant === "compact" ? "sm" : "md")];
@@ -77,10 +77,10 @@ export const LibreCorsaLogo: React.FC<LibreCorsaLogoProps> = ({
       <LibreCorsaMark className={`${s.mark} shrink-0 drop-shadow-[0_4px_14px_rgba(204,255,0,0.18)]`} />
       <div className="flex flex-col justify-center">
         <div
-          className={`font-f1-display leading-none font-black tracking-[0.06em] text-[#F5F7FA] italic ${s.word}`}
+          className={`font-f1-display leading-none font-black tracking-[0.12em] text-[#F5F7FA] italic ${s.word}`}
           style={{ textShadow: "0 2px 18px rgba(0,0,0,0.6)" }}
         >
-          LIBRE<span className="text-[#CCFF00]">CORSA</span>
+          WY<span className="text-[#CCFF00]">赛车</span>
         </div>
         {variant === "full" ? (
           <div className="mt-2 flex items-center gap-2">
@@ -89,7 +89,7 @@ export const LibreCorsaLogo: React.FC<LibreCorsaLogoProps> = ({
               <span className="h-[5px] w-4 bg-[#00E5FF]" />
               <span className="h-[5px] w-4 bg-[#FF2A3C]" />
             </span>
-            <span className="font-f1-mono text-[10px] font-bold tracking-[0.24em] text-[#8E96AA] uppercase">{subtitle}</span>
+            <span className={`font-f1-mono font-bold tracking-[0.18em] text-[#E6EAF2] uppercase ${s.subtitle}`}>{subtitle}</span>
           </div>
         ) : null}
       </div>

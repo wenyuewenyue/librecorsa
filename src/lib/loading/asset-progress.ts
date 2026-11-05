@@ -36,9 +36,9 @@ const KNOWN_BYTES: Record<AssetTaskId, number> = {
 };
 
 const INITIAL: Record<AssetTaskId, Omit<AssetTask, "lastProgressMs">> = {
-  track: { id: "track", label: "Circuit", weight: 0.55, loadedBytes: 0, totalBytes: KNOWN_BYTES.track, status: "pending" },
-  car: { id: "car", label: "Car", weight: 0.35, loadedBytes: 0, totalBytes: KNOWN_BYTES.car, status: "pending" },
-  shaders: { id: "shaders", label: "Shaders", weight: 0.1, loadedBytes: 0, totalBytes: 0, status: "pending" },
+  track: { id: "track", label: "赛道", weight: 0.55, loadedBytes: 0, totalBytes: KNOWN_BYTES.track, status: "pending" },
+  car: { id: "car", label: "赛车", weight: 0.35, loadedBytes: 0, totalBytes: KNOWN_BYTES.car, status: "pending" },
+  shaders: { id: "shaders", label: "着色器", weight: 0.1, loadedBytes: 0, totalBytes: 0, status: "pending" },
 };
 
 const ORDER: readonly AssetTaskId[] = ["track", "car", "shaders"];

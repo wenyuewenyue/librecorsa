@@ -66,16 +66,16 @@ export function exportDriverKeyFile(driverName: string): boolean {
 /** Reads an exported key file and makes it this browser's key; resolves the name it was saved with */
 export async function importDriverKeyFile(file: File): Promise<{ ok: true; name: string } | { ok: false; error: string }> {
   try {
-    if (file.size > MAX_FILE_BYTES) return { ok: false, error: "That is not a driver key file" };
+    if (file.size > MAX_FILE_BYTES) return { ok: false, error: "这不是车手密钥文件" };
     const raw: unknown = JSON.parse(await file.text());
-    if (typeof raw !== "object" || raw === null) return { ok: false, error: "That is not a driver key file" };
+    if (typeof raw !== "object" || raw === null) return { ok: false, error: "这不是车手密钥文件" };
     const { type, key, name } = raw as Record<string, unknown>;
     if (type !== FILE_TYPE || typeof key !== "string" || !KEY_PATTERN.test(key)) {
-      return { ok: false, error: "That is not a driver key file" };
+      return { ok: false, error: "这不是车手密钥文件" };
     }
-    if (!saveDriverKey(key)) return { ok: false, error: "This browser blocks saving it" };
+    if (!saveDriverKey(key)) return { ok: false, error: "此浏览器阻止保存" };
     return { ok: true, name: typeof name === "string" ? name.slice(0, 64) : "" };
   } catch {
-    return { ok: false, error: "That is not a driver key file" };
+    return { ok: false, error: "这不是车手密钥文件" };
   }
 }

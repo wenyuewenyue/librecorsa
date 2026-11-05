@@ -20,8 +20,10 @@ import { installTyreDeformation, type TyreDeformationHandle } from "@/lib/render
  *     WHEEL_xx    hub pivot with the authored camber; children WHEEL_xx_RIM / WHEEL_xx_TYRE
  *     SUSP_xx     brake callipers (steer with the wheel, do not spin)
  */
-const MODEL_URL = "/gt3/model/amg_gt3.glb";
-const COCKPIT_URL = "/gt3/model/amg_gt3_cockpit.glb";
+export const GT3_MODEL_URL = "/gt3/model/amg_gt3.glb";
+export const GT3_COCKPIT_URL = "/gt3/model/amg_gt3_cockpit.glb";
+const MODEL_URL = GT3_MODEL_URL;
+const COCKPIT_URL = GT3_COCKPIT_URL;
 /**
  * Source-model meshes replaced by the ported cockpit (steering wheel, seat, belts, roll cage, dash, centre console).
  * GLTFLoader sanitises node names, so these are matched after the same sanitising ("amg:Interior_Geo" loads as

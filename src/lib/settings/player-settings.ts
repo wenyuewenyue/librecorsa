@@ -25,6 +25,17 @@ import { AI_SKILL_DEFAULT } from "@/lib/sim/ai-tuning";
 import { SIM_REALISM_LEVELS, type SimRealism } from "@/lib/sim/sim-realism";
 import { DEFAULT_SESSION_CONDITIONS, sanitizeConditions, type SessionConditions } from "@/lib/sim/weather";
 
+export interface GraphicsTestResult {
+  avgFps: number;
+  p1Fps: number;
+  stutterRatio: number;
+  quality: GraphicsQuality;
+  renderScale: number;
+  deviceIsMobile: boolean;
+  source: "auto" | "manual";
+  testedAt: number;
+}
+
 export interface PlayerSettings {
   device: InputDevice;
   keys: KeyBindings;
@@ -47,6 +58,10 @@ export interface PlayerSettings {
   keyboardTuning: KeyboardTuning;
   hud: HudSettings;
   graphics: GraphicsSettings;
+  /** Last automatic graphics test, if any. Stored in this same settings object (bugesera.settings.v1). */
+  graphicsTest: GraphicsTestResult | null;
+  /** True once the first-run test prompt was skipped, so it is not shown on every entry. */
+  graphicsTestDismissed: boolean;
   touch: TouchSettings;
   /** Name, three-letter code and colour other players see */
   profile: DriverProfile;
@@ -256,6 +271,8 @@ export const DEFAULT_PLAYER_SETTINGS: PlayerSettings = {
   keyboardTuning: DEFAULT_KEYBOARD_TUNING,
   hud: DEFAULT_HUD_SETTINGS,
   graphics: DEFAULT_GRAPHICS_SETTINGS,
+  graphicsTest: null,
+  graphicsTestDismissed: false,
   touch: DEFAULT_TOUCH_SETTINGS,
   profile: DEFAULT_DRIVER_PROFILE,
   ghost: true,
@@ -412,6 +429,23 @@ function parseGraphics(v: unknown): GraphicsSettings {
   };
 }
 
+function parseGraphicsTest(v: unknown): GraphicsTestResult | null {
+  if (!isObj(v)) return null;
+  if (typeof v.avgFps !== "number" || typeof v.p1Fps !== "number" || typeof v.stutterRatio !== "number") return null;
+  if (!["low", "medium", "high"].includes(String(v.quality))) return null;
+  if (typeof v.renderScale !== "number" || typeof v.testedAt !== "number") return null;
+  return {
+    avgFps: v.avgFps,
+    p1Fps: v.p1Fps,
+    stutterRatio: v.stutterRatio,
+    quality: v.quality as GraphicsQuality,
+    renderScale: num(v.renderScale, 0.5, 1.5, 1),
+    deviceIsMobile: bool(v.deviceIsMobile, false),
+    source: v.source === "manual" ? "manual" : "auto",
+    testedAt: v.testedAt,
+  };
+}
+
 function parseTouch(v: unknown): TouchSettings {
   const d = DEFAULT_TOUCH_SETTINGS;
   if (!isObj(v)) return d;
@@ -463,6 +497,8 @@ export function parsePlayerSettings(raw: unknown): PlayerSettings {
     keyboardTuning: parseKeyboardTuning(raw.keyboardTuning),
     hud: parseHud(raw.hud),
     graphics: parseGraphics(raw.graphics),
+    graphicsTest: parseGraphicsTest(raw.graphicsTest),
+    graphicsTestDismissed: bool(raw.graphicsTestDismissed, false),
     touch: parseTouch(raw.touch),
     profile: parseProfile(raw.profile),
     ghost: bool(raw.ghost, d.ghost),
