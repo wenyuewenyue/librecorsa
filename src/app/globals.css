@@ -148,9 +148,11 @@ body {
       0 0 0 5px rgba(204, 255, 0, 0.14),
       0 0 22px rgba(204, 255, 0, 0.28);
   }
-  /* Toggles and sliders hide their input inside a label: ring the whole row */
-  :where(label):has(:where(input):focus-visible),
-  :where(html[data-input="pad"]) :where(label):has(:where(input):focus) {
+  /* Toggles and sliders hide their input inside a label: ring the whole row.
+     Text inputs keep only their own border: their label also holds the field
+     caption above the box, so ringing the label draws a larger box than the input. */
+  :where(label):has(:where(input[type="checkbox"], input[type="radio"], input[type="range"]):focus-visible),
+  :where(html[data-input="pad"]) :where(label):has(:where(input[type="checkbox"], input[type="radio"], input[type="range"]):focus) {
     outline: 2px solid var(--lc-volt);
     outline-offset: 1px;
     border-radius: 14px;

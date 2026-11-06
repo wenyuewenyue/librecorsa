@@ -173,6 +173,14 @@ check('auto-setup leaves a bound wheel alone; belt wheels get their defaults', (
   assert.equal(g29?.rotationDeg, 900);
   assert.equal(g29?.steer?.center, 0, 'a rim held off-centre is not taken as the centre');
 });
+check('auto-setup: Logitech starts on the bridge, others on WebHID; CSL Elite is belt-driven, CSL DD direct', () => {
+  const g923 = autoConfigureWheel([pad('G923 Racing Wheel for Xbox One and PC (Vendor: 046d Product: c26e)', '', [0])], DEFAULT_WHEEL_SETTINGS);
+  assert.equal(g923?.hidFfb, false, 'WebHID refuses Logitech, so the bridge instructions should show from the start');
+  assert.equal(g923?.ffbEnabled, true);
+  assert.equal(autoConfigureWheel([pad(MOZA_BASE, '', [0])], DEFAULT_WHEEL_SETTINGS)?.hidFfb, true);
+  assert.equal(autoConfigureWheel([pad('FANATEC CSL Elite Wheel Base', '', [0])], DEFAULT_WHEEL_SETTINGS)?.type, 'belt_gear');
+  assert.equal(autoConfigureWheel([pad('FANATEC CSL DD', '', [0])], DEFAULT_WHEEL_SETTINGS)?.type, 'direct_drive');
+});
 check('FFB gain and minimum force: continuous through zero, monotonic, sign kept', () => {
   const w = { ffbGain: 1.5, ffbMinForce: 0.1 };
   near(shapeFfbForce(0, w), 0);
@@ -209,6 +217,20 @@ check('per-car steering lock: 360° for Formula cars, 640° for AMG GT3 (steerin
   assert.ok(softLockForce(250, carWheelLockDeg('vf26')) < 0);
   assert.equal(softLockForce(250, carWheelLockDeg('amg-gt3')), 0);
   assert.ok(softLockForce(330, carWheelLockDeg('amg-gt3')) < 0);
+});
+check("a player's steering lock quickens the rack, never slows it, and loads from saved settings", () => {
+  const binding = { padId: 'Simucube 2 Pro', axis: 0, center: 0, invert: false };
+  const locks = { 'amg-gt3': 400 };
+  assert.equal(carWheelLockDeg('amg-gt3', locks), 400);
+  assert.equal(carWheelLockDeg('vf26', locks), 360);
+  assert.equal(carWheelLockDeg('amg-gt3', { 'amg-gt3': 800 }), 640, 'slower than the real car: ignored');
+  assert.equal(carWheelLockDeg('amg-gt3', { 'amg-gt3': 90 }), 640, 'below the minimum: ignored');
+  // 200° right on a 900° wheel (raw 0.4444): full lock on the 400° GT3 rack, 200/320 on the real one
+  near(wheelSteerValue(200 / 450, binding, 900, 0, carWheelLockDeg('amg-gt3', locks)), 1);
+  near(wheelSteerValue(100 / 450, binding, 900, 0, carWheelLockDeg('amg-gt3', locks)), 0.5);
+  const parsed = parsePlayerSettings({ wheel: { steerLockPerCar: { 'amg-gt3': 401, bogus: 'x' } } });
+  assert.deepEqual(parsed.wheel.steerLockPerCar, { 'amg-gt3': 401 });
+  assert.deepEqual(parsePlayerSettings({ wheel: {} }).wheel.steerLockPerCar, {});
 });
 check('speed-gated minimum force: zero at standstill (<= 1 km/h), full by 6 km/h', () => {
   const w = { ffbGain: 1, ffbMinForce: 0.2 };

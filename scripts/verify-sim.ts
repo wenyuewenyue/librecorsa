@@ -104,11 +104,13 @@ async function runVerification() {
   let accelOk = true;
   let tAccel = 0;
   let t100: number | null = null;
+  let clutchLock: { t: number; kmh: number } | null = null;
   for (const [tRef] of VF26_AI_REFERENCE.accel) {
     while (tAccel < tRef) {
       simStraight.step(1 / 120, { throttle: 1 });
       tAccel += 1 / 120;
       if (t100 === null && simStraight.vxMs * 3.6 >= 100) t100 = tAccel;
+      if (clutchLock === null && simStraight.drivetrain.clutchLocked) clutchLock = { t: tAccel, kmh: simStraight.vxMs * 3.6 };
     }
     const ref = accelRef.evaluate(tRef);
     accelChecks.push(`${tRef.toFixed(1)}s: ${simStraight.vxMs.toFixed(1)} vs ${ref.toFixed(1)} m/s`);
@@ -118,6 +120,11 @@ async function runVerification() {
   assert(
     t100 !== null && t100 > 2.2 && t100 < 3.2,
     `0-100 km/h launch time is in the F1 range (${t100?.toFixed(2)} s within [2.2, 3.2] s)`
+  );
+  // The auto-clutch lets the launch rpm down as the car rolls instead of slipping through all of first gear
+  assert(
+    clutchLock !== null && clutchLock.t < 1.6 && clutchLock.kmh < 60,
+    `Launch clutch locks early (${clutchLock ? `${clutchLock.t.toFixed(2)} s at ${clutchLock.kmh.toFixed(0)} km/h` : 'never'}; < 1.6 s, < 60 km/h)`
   );
   assert(
     Math.abs(simStraight.lateralOffsetM) < 0.05 && Math.abs(simStraight.headingErrorRad) < 0.002,
@@ -175,7 +182,7 @@ async function runVerification() {
       `Magic Formula slip curve (B=${tyre.mf.B.toFixed(3)} C=${tyre.mf.C.toFixed(3)} E=${tyre.mf.E.toFixed(3)}) peaks at x=${peakX.toFixed(3)} (1.0), slope ${slope0.toFixed(2)} (2.0), ${at3.toFixed(3)} at x=3 (falloff ${spec.falloffLevel})`
     );
   }
-  // Inflation: ideal gas, P/T constant; pressure stiffens the carcass; load shortens the rolling radius
+  // Inflation: ideal gas, P_absolute/T constant; pressure stiffens the carcass; load shortens the rolling radius
   {
     const spec = VF26_TYRES.soft.front;
     const tyre = createTyreRuntime(spec, 20);
@@ -183,7 +190,7 @@ async function runVerification() {
     setTyreTemperature(tyre, 95);
     const pHot = tyre.pressurePsi;
     const rateHot = tyre.verticalRate;
-    const ideal = (pCold * (95 + 273.15)) / (20 + 273.15);
+    const ideal = ((pCold + 14.6959) * (95 + 273.15)) / (20 + 273.15) - 14.6959;
     const rLight = tyreRollingRadius(tyre, 2000);
     const rHeavy = tyreRollingRadius(tyre, 12000);
     assert(
@@ -970,16 +977,16 @@ async function runVerification() {
     const sim = new F1Physics2026(track);
     sim.resetToStartGrid(false);
     const hotBefore = sim.wheels[0].tyre.pressurePsi;
-    const setup = { coldPressurePsi: { front: 20.4, rear: 19.1 }, camberDeg: { front: -3.2, rear: -1.8 } };
+    const setup = { coldPressurePsi: { fl: 20.4, fr: 20.4, rl: 19.1, rr: 19.1 }, camberDeg: { front: -3.2, rear: -1.8 } };
     sim.setTyreSetup(setup);
     const got = sim.getTyreSetup();
     const roundTrip =
-      got.coldPressurePsi.front === 20.4 &&
-      got.coldPressurePsi.rear === 19.1 &&
+      got.coldPressurePsi.fl === 20.4 &&
+      got.coldPressurePsi.rl === 19.1 &&
       got.camberDeg.front === -3.2 &&
       got.camberDeg.rear === -1.8;
-    // Hot pressure follows the ideal gas law from the new cold pressure
-    const hotPsi = (coldPsi: number, gasC: number) => (coldPsi * (gasC + 273.15)) / 293.15;
+    // Setup and output stay in psi gauge; the ideal gas law uses absolute pressure.
+    const hotPsi = (coldPsi: number, gasC: number) => ((coldPsi + 14.6959) * (gasC + 273.15)) / 293.15 - 14.6959;
     const hotOk =
       Math.abs(sim.wheels[0].tyre.pressurePsi - hotPsi(20.4, sim.wheels[0].tyre.gasTempC)) < 1e-9 &&
       Math.abs(sim.wheels[2].tyre.pressurePsi - hotPsi(19.1, sim.wheels[2].tyre.gasTempC)) < 1e-9;
@@ -1000,14 +1007,14 @@ async function runVerification() {
       kept.camberDeg.rear === -1.8;
     assert(surviveOk, 'Tyre setup survives a grid reset and a compound change (cold pressure and camber kept)');
 
-    sim.setTyreSetup({ coldPressurePsi: { front: 40, rear: 5 }, camberDeg: { front: -9, rear: 0 } });
+    sim.setTyreSetup({ coldPressurePsi: { fl: 40, fr: 40, rl: 5, rr: 5 }, camberDeg: { front: -9, rear: 0 } });
     const clamped = sim.getTyreSetup();
     assert(
-      clamped.coldPressurePsi.front === 27 &&
-        clamped.coldPressurePsi.rear === 17 &&
+      clamped.coldPressurePsi.fl === 27 &&
+        clamped.coldPressurePsi.rr === 14 &&
         clamped.camberDeg.front === -4.5 &&
         clamped.camberDeg.rear === -0.5,
-      `Tyre setup inputs are clamped (pressure ${clamped.coldPressurePsi.front}/${clamped.coldPressurePsi.rear} psi, camber ${clamped.camberDeg.front}°/${clamped.camberDeg.rear}°)`
+      `Tyre setup inputs are clamped (pressure ${clamped.coldPressurePsi.fl}/${clamped.coldPressurePsi.rr} psi, camber ${clamped.camberDeg.front}°/${clamped.camberDeg.rear}°)`
     );
   }
 

@@ -31,6 +31,7 @@ import { F12026CarSim } from '../src/lib/sim/f12026-car/F12026CarSim';
 import { loadGlbGeometry } from './lib/glb-geometry';
 import { createFlatTestTrack } from './lib/flat-track';
 import { checkBarrierCrashes, vehicleCrashCar } from './lib/barrier-crash';
+import { checkPlacementAndRecovery } from './lib/placement-recovery';
 
 const failures: string[] = [];
 const check = (name: string, ok: boolean, detail: string) => {
@@ -352,6 +353,30 @@ console.log('\n== Steps, ledges and gear hunting (flat ground with a step at z =
   });
   const downs = gears.filter((g, i) => i > 0 && g < gears[i - 1]).length;
   check('No gear hunting under wheelspin', downs === 0, `gears ${gears.join('→')}`);
+}
+
+// Loose ground: gravel ploughs the car down whichever way it slides, but a car can still crawl out of it
+console.log('\n== Gravel trap (flat gravel vs flat road)');
+{
+  const gravel = new FlatGroundQuery(0, 'gravel');
+  /** Metres to slow from 150 to 50 km/h, coasting straight or sliding 35° sideways */
+  const slowDown = (ground: GroundQuery, slideDeg: number) => {
+    const car = makeCar(ground);
+    car.reset(0, 0, 0, 150 / 3.6);
+    car.velocity.applyAxisAngle(new THREE.Vector3(0, 1, 0), (slideDeg * Math.PI) / 180);
+    run(car, 30, () => ({ throttle: 0, brake: 0, steer: 0 }), (c) => c.velocity.length() * 3.6 < 50 || !finite(c));
+    return Math.hypot(car.position.x, car.position.z);
+  };
+  const roadCoast = slowDown(flat, 0);
+  const gravelCoast = slowDown(gravel, 0);
+  const gravelSlide = slowDown(gravel, 35);
+  check('Gravel slows a coasting car hard', gravelCoast < roadCoast * 0.6 && gravelCoast < 100,
+    `150→50 km/h in ${fmt(gravelCoast, 0)} m on gravel, ${fmt(roadCoast, 0)} m on the road`);
+  check('Gravel stops a sideways slide', gravelSlide < 80, `150→50 km/h sliding 35° in ${fmt(gravelSlide, 0)} m`);
+  const out = makeCar(gravel);
+  out.reset(0, 0, 0, 0);
+  run(out, 10, launchDriver(0.1));
+  check('A car can drive out of the gravel', out.telemetry.speedKmh > 25, `${fmt(out.telemetry.speedKmh, 0)} km/h after 10 s from rest`);
 }
 
 // ---------------------------------------------------------------------------
@@ -773,6 +798,10 @@ const crossesWall = (walls: WallQuery, ax: number, az: number, bx: number, bz: n
   // Missed braking points: flat out at 300 km/h into the outside barriers of Turns 1 and 2, then drive away
   checkBarrierCrashes(check, 'f12026-car', track, walls, () => vehicleCrashCar(new F12026CarSim(track, trackRoot)));
 }
+
+console.log('\n== Placement and blow-up recovery');
+// Rejoins (flashback, autopilot / AI rejoin, blow-up recovery) on Rwanda's hills, rolling at 260 km/h (issue #21)
+checkPlacementAndRecovery(check, 'f12026-car', track, () => new F12026CarSim(track, trackRoot));
 
 // ---------------------------------------------------------------------------
 // 11. Simulator adapter (F12026CarSim): track coordinates, autopilot laps on the colliders

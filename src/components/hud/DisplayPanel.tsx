@@ -24,28 +24,34 @@ export interface DisplayPanelProps {
   vrSupported: boolean;
   vrActive: boolean;
   onEnterVr: () => void;
+  /** Automatic graphics test: re-runs the benchmark on demand (only from the title menu). */
+  onRunGraphicsTest?: () => void;
+  /** True while a benchmark is running; the button is disabled then. */
+  graphicsTestRunning?: boolean;
+  /** True when a benchmark cannot start here (e.g. a race is running); the button is disabled. */
+  graphicsTestDisabled?: boolean;
 }
 
 const DRIVER_COLORS = ["#E10600", "#00D2BE", "#FF8700", "#0600EF", "#006F62", "#2B4562", "#B6BABD", "#CCFF00"] as const;
 
 const HUD_PRESETS: { id: HudPreset; title: string; detail: string }[] = [
-  { id: "broadcast", title: "Broadcast", detail: "TV graphics: tower, map, telemetry strip" },
-  { id: "dash", title: "Wheel Dash", detail: "Steering-wheel screen, low and centred" },
-  { id: "telemetry", title: "Telemetry", detail: "The dash plus tyres, G, power, inputs" },
-  { id: "classic", title: "Classic", detail: "The original corner panels" },
-  { id: "minimal", title: "Minimal", detail: "Speed, gear and lap only" },
+  { id: "broadcast", title: "转播", detail: "电视转播画面：排名塔、赛道图、遥测条" },
+  { id: "dash", title: "方向盘仪表", detail: "方向盘屏幕，低位居中" },
+  { id: "telemetry", title: "遥测", detail: "仪表盘加轮胎、G 值、动力、输入" },
+  { id: "classic", title: "经典", detail: "原始角落面板" },
+  { id: "minimal", title: "极简", detail: "仅速度、挡位和圈数" },
 ];
 
 const QUALITY_CHOICES: { id: GraphicsQuality; title: string; detail: string }[] = [
-  { id: "low", title: "Low", detail: "No shadows or bloom, lower resolution — for laptops and phones" },
-  { id: "medium", title: "Medium", detail: "Shadows, no bloom" },
-  { id: "high", title: "High", detail: "Everything on" },
+  { id: "low", title: "低", detail: "无阴影和泛光，较低分辨率——适合笔记本和手机" },
+  { id: "medium", title: "中", detail: "有阴影，无泛光" },
+  { id: "high", title: "高", detail: "全部开启" },
 ];
 
 const TOUCH_CHOICES: { id: TouchMode; title: string; detail: string }[] = [
-  { id: "auto", title: "Auto", detail: "Phones and tablets" },
-  { id: "on", title: "On", detail: "Always" },
-  { id: "off", title: "Off", detail: "Never" },
+  { id: "auto", title: "自动", detail: "手机和平板" },
+  { id: "on", title: "开启", detail: "始终" },
+  { id: "off", title: "关闭", detail: "从不" },
 ];
 
 /**
@@ -171,9 +177,9 @@ const HudThumb: React.FC<{ preset: HudPreset; active: boolean }> = ({ preset, ac
 const formatPercent = (value: number) => `${Math.round(value * 100)}%`;
 
 const MIRROR_CHOICES: { id: VirtualMirrorMode; title: string; detail: string }[] = [
-  { id: "auto", title: "Auto", detail: "Onboard views without mirrors in sight" },
-  { id: "always", title: "Always", detail: "Every driving view, chase too" },
-  { id: "off", title: "Off", detail: "Wing mirrors only" },
+  { id: "auto", title: "自动", detail: "车载视角中无可见后视镜时开启" },
+  { id: "always", title: "始终", detail: "所有驾驶视角，包括车后追踪" },
+  { id: "off", title: "关闭", detail: "仅翼子板后视镜" },
 ];
 
 /** Labelled pill segmented row */
@@ -215,7 +221,16 @@ function Segmented<T extends string>({
 }
 
 /** Driver identity, HUD layout, graphics and touch / ghost options, saved to the player's settings */
-export const DisplayPanel: React.FC<DisplayPanelProps> = ({ settings, onChangeSettings, vrSupported, vrActive, onEnterVr }) => {
+export const DisplayPanel: React.FC<DisplayPanelProps> = ({
+  settings,
+  onChangeSettings,
+  vrSupported,
+  vrActive,
+  onEnterVr,
+  onRunGraphicsTest,
+  graphicsTestRunning,
+  graphicsTestDisabled,
+}) => {
   // Live text while the name or code field is being edited; null shows the saved value
   const [nameDraft, setNameDraft] = useState<string | null>(null);
   const [codeDraft, setCodeDraft] = useState<string | null>(null);
@@ -247,10 +262,10 @@ export const DisplayPanel: React.FC<DisplayPanelProps> = ({ settings, onChangeSe
       <div className="flex min-w-0 flex-col gap-4">
         {/* DRIVER */}
         <div className={CARD}>
-          <CardHeader label="Driver" color="#CCFF00" />
+          <CardHeader label="车手" color="#CCFF00" />
           <div className="grid grid-cols-[1fr_96px] gap-2.5">
             <label className="flex min-w-0 flex-col gap-1.5">
-              <span className={FIELD_LABEL}>Name</span>
+              <span className={FIELD_LABEL}>姓名</span>
               <input
                 type="text"
                 maxLength={16}
@@ -261,7 +276,7 @@ export const DisplayPanel: React.FC<DisplayPanelProps> = ({ settings, onChangeSe
               />
             </label>
             <label className="flex min-w-0 flex-col gap-1.5">
-              <span className={FIELD_LABEL}>Code</span>
+              <span className={FIELD_LABEL}>代号</span>
               <input
                 type="text"
                 maxLength={3}
@@ -274,7 +289,7 @@ export const DisplayPanel: React.FC<DisplayPanelProps> = ({ settings, onChangeSe
           </div>
 
           <div className="flex flex-col gap-2">
-            <span className={FIELD_LABEL}>Colour</span>
+            <span className={FIELD_LABEL}>颜色</span>
             <div className="flex flex-wrap items-center gap-2">
               {DRIVER_COLORS.map((c) => {
                 const active = profile.color === c;
@@ -282,7 +297,7 @@ export const DisplayPanel: React.FC<DisplayPanelProps> = ({ settings, onChangeSe
                   <button
                     key={c}
                     type="button"
-                    aria-label={`Colour ${c}`}
+                    aria-label={`颜色 ${c}`}
                     aria-pressed={active}
                     onClick={() => setProfile({ color: sanitizeColor(c) })}
                     style={{ backgroundColor: c }}
@@ -299,17 +314,17 @@ export const DisplayPanel: React.FC<DisplayPanelProps> = ({ settings, onChangeSe
                   onChange={(e) => setProfile({ color: sanitizeColor(e.target.value) })}
                   className="h-[22px] w-[22px] cursor-pointer rounded-full border-0 bg-transparent p-0 [&::-moz-color-swatch]:rounded-full [&::-moz-color-swatch]:border-0 [&::-webkit-color-swatch]:rounded-full [&::-webkit-color-swatch]:border-0 [&::-webkit-color-swatch-wrapper]:p-0"
                 />
-                Custom
+                自定义
               </label>
             </div>
           </div>
-          <p className="m-0 text-[12px] leading-snug text-[#8E96AA]">Shown to other players in multiplayer and on leaderboards.</p>
+          <p className="m-0 text-[12px] leading-snug text-[#8E96AA]">会在联机和排行榜中向其他玩家展示。</p>
         </div>
 
         {/* HUD */}
         <div className={CARD}>
           <CardHeader label="HUD" color="#00E5FF" />
-          <div role="radiogroup" aria-label="Layout" className="grid grid-cols-3 gap-1.5 sm:grid-cols-5">
+          <div role="radiogroup" aria-label="布局" className="grid grid-cols-3 gap-1.5 sm:grid-cols-5">
             {HUD_PRESETS.map((p) => {
               const active = hud.preset === p.id;
               return (
@@ -341,7 +356,7 @@ export const DisplayPanel: React.FC<DisplayPanelProps> = ({ settings, onChangeSe
           ) : null}
 
           <RangeRow
-            label="HUD size"
+            label="HUD 尺寸"
             value={hud.scale}
             min={0.75}
             max={1.5}
@@ -352,20 +367,20 @@ export const DisplayPanel: React.FC<DisplayPanelProps> = ({ settings, onChangeSe
 
           <div className="-mt-1 flex flex-col">
             <Toggle
-              label="Input trace"
-              detail="Rolling throttle, brake and steering trace"
+              label="输入轨迹"
+              detail="滚动的油门、刹车和转向轨迹"
               checked={hud.inputTrace}
               onChange={() => setHud({ inputTrace: !hud.inputTrace })}
             />
             <Toggle
-              label="Delta bar"
-              detail="Live gap ribbon at the top: green while you gain on your best, with a trend chevron"
+              label="差距条"
+              detail="顶部实时差距条：快于最佳圈时为绿色，带趋势箭头"
               checked={hud.deltaBar}
               onChange={() => setHud({ deltaBar: !hud.deltaBar })}
             />
             <Toggle
-              label="Lap summary card"
-              detail="Sectors, corner speeds and theoretical best after each lap"
+              label="单圈总结卡"
+              detail="每圈后的分段、弯道速度和理论最佳"
               checked={hud.lapSummary}
               onChange={() => setHud({ lapSummary: !hud.lapSummary })}
             />
@@ -374,10 +389,10 @@ export const DisplayPanel: React.FC<DisplayPanelProps> = ({ settings, onChangeSe
 
         {/* WIDGETS & CUES */}
         <div className={CARD}>
-          <CardHeader label="Widgets & cues" color="#FFB300" />
+          <CardHeader label="小部件与提示" color="#FFB300" />
           <div className="flex flex-col gap-2">
-            <span className={FIELD_LABEL}>Rear-view mirror</span>
-            <div role="radiogroup" aria-label="Rear-view mirror" className="grid grid-cols-3 gap-1.5">
+            <span className={FIELD_LABEL}>后视镜</span>
+            <div role="radiogroup" aria-label="后视镜" className="grid grid-cols-3 gap-1.5">
               {MIRROR_CHOICES.map((m) => (
                 <OptionCard
                   key={m.id}
@@ -391,61 +406,66 @@ export const DisplayPanel: React.FC<DisplayPanelProps> = ({ settings, onChangeSe
           </div>
           <div className="grid gap-3 min-[420px]:grid-cols-2">
             <Segmented
-              label="Timing tower"
+              label="计时塔"
               value={hud.towerGaps}
               options={[
-                { id: "interval", label: "Interval" },
-                { id: "leader", label: "To leader" },
+                { id: "interval", label: "间隔" },
+                { id: "leader", label: "距领先者" },
               ]}
               onChange={(towerGaps) => setHud({ towerGaps })}
             />
             <Segmented
-              label="Circuit map"
+              label="赛道图"
               value={hud.mapMode}
               options={[
-                { id: "full", label: "Full lap" },
-                { id: "local", label: "Zoomed" },
+                { id: "full", label: "整圈" },
+                { id: "local", label: "放大" },
               ]}
               onChange={(mapMode) => setHud({ mapMode })}
             />
           </div>
           <div className="-mt-1 flex flex-col">
             <Toggle
-              label="Proximity radar"
-              detail="Fades in when a car is alongside or within 25 m"
+              label="接近雷达"
+              detail="有车辆并排或在 25 m 内时淡入"
               checked={hud.radar}
               onChange={() => setHud({ radar: !hud.radar })}
             />
             <Toggle
-              label="Race split gaps"
-              detail="Time to the cars directly ahead and behind, measured at the same point of the track"
+              label="分段差距"
+              detail="在赛道同一点测得的前后车时间差"
               checked={hud.splitGaps}
               onChange={() => setHud({ splitGaps: !hud.splitGaps })}
             />
             <Toggle
-              label="Auto-fold the MFD"
-              detail="Folds to its status pill 3.5 s after the last D-pad press"
+              label="自动收起 MFD"
+              detail="最后一次方向键操作 3.5 s 后收起为状态胶囊"
               checked={hud.mfdAutoCollapse}
               onChange={() => setHud({ mfdAutoCollapse: !hud.mfdAutoCollapse })}
             />
             <Toggle
-              label="DRS beeps"
-              detail="Two tones when DRS is available, a chime when the flap opens"
+              label="DRS 提示音"
+              detail="DRS 可用时两声提示，襟翼打开时一声提示音"
               checked={hud.drsBeep}
               onChange={() => setHud({ drsBeep: !hud.drsBeep })}
             />
             <Toggle
-              label="Shift beep"
-              detail="Short beep 150 rpm before the rev limiter"
+              label="换挡提示音"
+              detail="转速限制前 150 rpm 短促提示音"
               checked={hud.shiftBeep}
               onChange={() => setHud({ shiftBeep: !hud.shiftBeep })}
             />
-            <Toggle
-              label="Neck FX"
-              detail="Onboard views turn gently into the slide, so you feel the rear step out"
-              checked={hud.neckFx}
-              onChange={() => setHud({ neckFx: !hud.neckFx })}
-            />
+            <div className="pt-2">
+              <Segmented
+                label="驾驶舱头部动态"
+                value={hud.headMovement}
+                options={[
+                  { id: "natural", label: "自然" },
+                  { id: "static", label: "锁定" },
+                ]}
+                onChange={(headMovement) => setHud({ headMovement })}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -453,8 +473,8 @@ export const DisplayPanel: React.FC<DisplayPanelProps> = ({ settings, onChangeSe
       <div className="flex min-w-0 flex-col gap-4">
         {/* GRAPHICS */}
         <div className={CARD}>
-          <CardHeader label="Graphics" color="#FF8700" />
-          <div role="radiogroup" aria-label="Quality" className="grid grid-cols-1 gap-1.5 min-[420px]:grid-cols-3">
+          <CardHeader label="画面" color="#FF8700" />
+          <div role="radiogroup" aria-label="画质" className="grid grid-cols-1 gap-1.5 min-[420px]:grid-cols-3">
             {QUALITY_CHOICES.map((q) => (
               <OptionCard
                 key={q.id}
@@ -468,15 +488,43 @@ export const DisplayPanel: React.FC<DisplayPanelProps> = ({ settings, onChangeSe
           </div>
 
           <RangeRow
-            label="Render resolution"
+            label="渲染分辨率"
             value={graphics.renderScale}
             min={0.5}
             max={1.5}
             step={0.05}
             format={formatPercent}
-            hint="Lower is faster"
+            hint="越低越流畅"
             onChange={(renderScale) => setGraphics({ renderScale })}
           />
+
+          {onRunGraphicsTest ? (
+            <div className="flex flex-col gap-2 border-t border-[#262B3D] pt-3">
+              <button
+                type="button"
+                disabled={Boolean(graphicsTestRunning || graphicsTestDisabled)}
+                onClick={onRunGraphicsTest}
+                className="min-h-[44px] cursor-pointer rounded-full border border-[#CCFF00] bg-[#CCFF00]/[0.12] px-4 text-[14px] font-bold text-[#CCFF00] transition-colors hover:bg-[#CCFF00]/25 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {graphicsTestRunning ? "正在检测画质…" : "自动检测画质"}
+              </button>
+              {settings.graphicsTest ? (
+                <span className="text-[12px] leading-snug text-[#8E96AA]">
+                  上次检测结果：平均 {settings.graphicsTest.avgFps.toFixed(1)} 帧/秒，最卡的 1% 为{" "}
+                  {settings.graphicsTest.p1Fps.toFixed(1)} 帧/秒，检测时定为
+                  {settings.graphicsTest.quality === "low" ? "低" : settings.graphicsTest.quality === "medium" ? "中" : "高"}画质。
+                  手动更改不会被自动检测覆盖，除非再次执行自动检测。
+                </span>
+              ) : (
+                <span className="text-[12px] leading-snug text-[#8E96AA]">
+                  执行自动检测将运行一段赛道并根据帧率推荐画质，约需 20 秒。检测仅可在主菜单中进行。
+                </span>
+              )}
+              {graphicsTestDisabled && !graphicsTestRunning ? (
+                <span className="text-[12px] text-[#8E96AA]">检测仅可在主菜单中进行。</span>
+              ) : null}
+            </div>
+          ) : null}
 
           <div className="flex flex-wrap items-center gap-x-3.5 gap-y-2 border-t border-[#262B3D] px-2 pt-3">
             <span className="w-[34px] shrink-0 text-[15px] font-bold">VR</span>
@@ -487,11 +535,11 @@ export const DisplayPanel: React.FC<DisplayPanelProps> = ({ settings, onChangeSe
                 onClick={onEnterVr}
                 className="inline-flex min-h-[40px] cursor-pointer items-center rounded-full border border-[#CCFF00] bg-[#CCFF00]/[0.12] px-4 text-[13px] font-bold text-[#CCFF00] transition-colors hover:bg-[#CCFF00]/25 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {vrActive ? "In VR" : "Enter VR (WebXR)"}
+                {vrActive ? "VR 中" : "进入 VR（WebXR）"}
               </button>
             ) : (
               <span className="min-w-0 flex-1 text-[12px] leading-snug text-[#8E96AA]">
-                VR headset not detected (needs a WebXR browser, e.g. Quest Browser or Chrome with SteamVR/OpenXR)
+                未检测到 VR 头显（需要支持 WebXR 的浏览器，如 Quest Browser 或开启 SteamVR/OpenXR 的 Chrome）
               </span>
             )}
           </div>
@@ -499,10 +547,10 @@ export const DisplayPanel: React.FC<DisplayPanelProps> = ({ settings, onChangeSe
 
         {/* TOUCH & GHOST */}
         <div className={CARD}>
-          <CardHeader label="Touch & ghost" color="#00D2BE" />
+          <CardHeader label="触屏与幽灵车" color="#00D2BE" />
           <div className="flex flex-col gap-2">
-            <span className={FIELD_LABEL}>Touch controls</span>
-            <div role="radiogroup" aria-label="Touch controls" className="grid grid-cols-3 gap-1.5">
+            <span className={FIELD_LABEL}>触屏控制</span>
+            <div role="radiogroup" aria-label="触屏控制" className="grid grid-cols-3 gap-1.5">
               {TOUCH_CHOICES.map((t) => (
                 <OptionCard
                   key={t.id}
@@ -517,19 +565,19 @@ export const DisplayPanel: React.FC<DisplayPanelProps> = ({ settings, onChangeSe
 
           <div className="flex flex-col">
             <Toggle
-              label="Tilt to steer"
-              detail="Tilt the device instead of the on-screen slider"
+              label="倾斜转向"
+              detail="倾斜设备代替屏幕滑块转向"
               checked={touch.tiltSteer}
               onChange={() => setTouch({ tiltSteer: !touch.tiltSteer })}
             />
             <RangeRow
-              label="Tilt range"
+              label="倾斜范围"
               value={touch.tiltRangeDeg}
               min={10}
               max={60}
               step={1}
               format={(v) => `${v}°`}
-              hint="Tilt angle for full lock"
+              hint="满转角对应的倾斜角度"
               dim={!touch.tiltSteer}
               onChange={(tiltRangeDeg) => setTouch({ tiltRangeDeg })}
             />
@@ -537,8 +585,8 @@ export const DisplayPanel: React.FC<DisplayPanelProps> = ({ settings, onChangeSe
 
           <div className="border-t border-[#262B3D] pt-2">
             <Toggle
-              label="Race my best-lap ghost"
-              detail="Your personal-best lap races alongside you on this circuit"
+              label="与最佳圈幽灵车竞速"
+              detail="你的个人最佳圈会在这条赛道上与你同场竞速"
               checked={settings.ghost}
               onChange={() => onChangeSettings((prev) => ({ ...prev, ghost: !prev.ghost }))}
             />

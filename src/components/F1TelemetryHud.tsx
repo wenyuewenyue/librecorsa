@@ -43,6 +43,7 @@ import { RaceResults } from "./hud/RaceResults";
 import { RaceControlBanner } from "./hud/RaceControlBanner";
 import { ReplayBar } from "./hud/ReplayBar";
 import { TouchControls, type TouchControlsProps } from "./hud/TouchControls";
+import { KeysOverlay } from "./hud/KeysOverlay";
 import { getTrackInfo } from "@/lib/track-registry";
 import { useInputMode } from "./menu/input-mode";
 import { PadGlyph } from "./menu/menu-ui";
@@ -90,6 +91,9 @@ interface F1TelemetryHudProps extends MultiplayerPanelProps {
   hudToggleButton?: string;
   mouseSteerEnabled?: boolean;
   gamepadAssist?: boolean;
+  /** Automatic gearbox (pause menu toggle) */
+  autoGearbox?: boolean;
+  onSetAutoGearbox?: (enabled: boolean) => void;
   gamepadRumble: boolean;
   aiOpponents: boolean;
   onToggleAiOpponents: () => void;
@@ -126,7 +130,14 @@ interface F1TelemetryHudProps extends MultiplayerPanelProps {
   onOpenControls?: () => void;
   onExitToTitle?: () => void;
   controlsCheatSheet?: readonly (readonly [string, string])[];
-  keyNames?: Partial<Record<"camera" | "racingLine" | "mute" | "mouseSteer" | "autopilot" | "restart", string>>;
+  /** Driving overlay only: filtered to the input method actually in use */
+  drivingControls?: {
+    mode: "keyboard" | "controller" | "wheel" | "touch";
+    rows: readonly (readonly [string, string])[];
+  };
+  keyNames?: Partial<Record<"camera" | "racingLine" | "mute" | "mouseSteer" | "autopilot" | "restart" | "shiftUp" | "shiftDown", string>>;
+  /** Label of the keys-overlay reopen shortcut (keyboard only, e.g. "H") */
+  keysOverlayKeyLabel?: string;
   /** HUD layout preset, size and optional widgets */
   hud?: HudSettings;
   /** The sim draws the virtual rear-view mirror at the top centre: the notifications there move under it */
@@ -187,7 +198,7 @@ export const F1TelemetryHud: React.FC<F1TelemetryHudProps> = (props) => {
     cameraMode,
     boostLatch,
     showLaunchHint = false,
-    launchHintText = "Hold W / ↑ to launch · Esc for menu",
+    launchHintText = "按住 W / ↑ 起步 · Esc 打开菜单",
     mouseSteerEnabled = false,
     gamepadAssist = true,
     paused,
@@ -227,6 +238,35 @@ export const F1TelemetryHud: React.FC<F1TelemetryHudProps> = (props) => {
     onChangeCameraMode(nextCameraMode(cameraMode));
   }, [cameraMode, onChangeCameraMode]);
 
+  // Driving keys overlay: shown by default on the driving screen. Esc closes
+  // just the overlay (capture phase, so the simulator's Esc-to-pause handler
+  // never sees it); a second Esc then opens the pause menu as usual. The
+  // keys-overlay shortcut (default H, rebindable in settings) reopens it:
+  // the simulator dispatches HUD_TOGGLE_EVENT.keysOverlay for that action.
+  const [keysOverlayVisible, setKeysOverlayVisible] = useState(true);
+  useEffect(() => {
+    const onShow = () => setKeysOverlayVisible(true);
+    window.addEventListener(HUD_TOGGLE_EVENT.keysOverlay, onShow);
+    return () => window.removeEventListener(HUD_TOGGLE_EVENT.keysOverlay, onShow);
+  }, []);
+  // MFD expanded state, reported by MultiPageMfd: while it is expanded the
+  // keys overlay is suppressed entirely (see KeysOverlay), and it returns
+  // on its own when the MFD folds — keysOverlayVisible above is the
+  // player's own hide choice and is never touched by this.
+  const [mfdExpanded, setMfdExpanded] = useState(false);
+  useEffect(() => {
+    if (!keysOverlayVisible || paused || mfdExpanded) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== "Escape") return;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setKeysOverlayVisible(false);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [keysOverlayVisible, paused, mfdExpanded]);
+
   if (props.replay && !paused) {
     return (
       <div className="pointer-events-none fixed inset-0 z-20 select-none">
@@ -239,7 +279,7 @@ export const F1TelemetryHud: React.FC<F1TelemetryHudProps> = (props) => {
             <span className="lc-ping absolute inset-0 rounded-full bg-[#F5F7FA]" />
             <span className="relative h-2 w-2 rounded-full bg-[#F5F7FA]" />
           </span>
-          <span className="lc-disp text-[18px]">Replay</span>
+          <span className="lc-disp text-[18px]">回放</span>
         </div>
         <div className="pointer-events-auto">
           <ReplayBar {...props.replay} />
@@ -282,7 +322,7 @@ export const F1TelemetryHud: React.FC<F1TelemetryHudProps> = (props) => {
       onClick={props.onTogglePause}
       className={`pointer-events-auto hidden h-11 cursor-pointer rounded-full px-5 lc-title text-[15px] text-[#CCFF00] pointer-coarse:block ${HUD_GLASS}`}
     >
-      Menu
+      菜单
     </button>
   );
   /** Scales a corner group of the HUD about that corner */
@@ -301,6 +341,7 @@ export const F1TelemetryHud: React.FC<F1TelemetryHudProps> = (props) => {
         compound={tireCompound}
         autoFold={hud?.mfdAutoCollapse ?? true}
         defaultFolded={(hud?.mfdAutoCollapse ?? true) || classic || preset === "telemetry" || (preset === "broadcast" && window.innerWidth < 1280)}
+        onFoldedChange={(folded) => setMfdExpanded(!folded)}
       />
     </div>
   );
@@ -382,7 +423,7 @@ export const F1TelemetryHud: React.FC<F1TelemetryHudProps> = (props) => {
             >
               {drsNotice.zone}
             </span>
-            <span className="lc-disp text-[16px]">{drsNotice.eligible ? "DRS enabled" : "DRS not enabled"}</span>
+            <span className="lc-disp text-[16px]">{drsNotice.eligible ? "DRS 已启用" : "DRS 未启用"}</span>
           </div>
         ) : null}
         {showLaunchHint && !race ? (
@@ -402,7 +443,7 @@ export const F1TelemetryHud: React.FC<F1TelemetryHudProps> = (props) => {
             className="lc-data pointer-events-auto inline-flex min-h-9 cursor-pointer items-center gap-2 rounded-full border border-[#FFB300] bg-[#08090D]/[0.86] px-4 py-1 text-[11px] text-[#FFB300] uppercase transition-colors hover:bg-[#FFB300]/15"
           >
             <span className="h-1.5 w-1.5 rounded-full bg-[#FFB300]" />
-            Pedals not set up · click to calibrate throttle &amp; brake
+            踏板未设置 · 点击校准油门和刹车
           </button>
         ) : null}
         {lightsPhase ? (
@@ -413,14 +454,14 @@ export const F1TelemetryHud: React.FC<F1TelemetryHudProps> = (props) => {
               </svg>
             </span>
             <span className="lc-title lc-breathe text-[13px] text-[#F5F7FA] sm:text-[15px]">
-              Hold the throttle · go when the lights go out
+              踩住油门 · 灯灭即起步
             </span>
           </div>
         ) : null}
         {mouseSteerEnabled ? (
           <div className={`flex flex-col items-center gap-1.5 rounded-[18px] px-4 py-2 ${HUD_GLASS}`}>
             <span className={HUD_LBL} style={{ color: HUD_CYAN }}>
-              Mouse steering · V to exit
+              鼠标转向 · 按 V 退出
             </span>
             <span className="relative h-2 w-44 overflow-hidden rounded-full bg-[#1B1F2B]">
               <span className="absolute inset-y-0 left-1/2 w-px bg-[#F5F7FA]/40" />
@@ -462,14 +503,14 @@ export const F1TelemetryHud: React.FC<F1TelemetryHudProps> = (props) => {
           {inputMode === "pad" ? (
             <span className="inline-flex items-center gap-1.5">
               <PadGlyph button="menu" family={padFamily} />
-              Menu
+              菜单
             </span>
           ) : null}
           {(inputMode === "pad" ? [] : [
-            ["ESC", "Menu"],
-            [props.keyNames?.camera ?? "C", "Camera"],
-            [props.keyNames?.racingLine ?? "R", "Line"],
-            [props.keyNames?.restart ?? "⌫", "Restart"],
+            ["ESC", "菜单"],
+            [props.keyNames?.camera ?? "C", "视角"],
+            [props.keyNames?.racingLine ?? "R", "赛车线"],
+            [props.keyNames?.restart ?? "⌫", "重新开始"],
           ]).map(([k, label]) => (
             <span key={k} className="inline-flex items-center gap-1.5">
               <span className="lc-data inline-flex h-[22px] min-w-[22px] items-center justify-center rounded-full bg-[#CCFF00] px-1.5 text-[10px] text-[#08090D]">
@@ -541,6 +582,23 @@ export const F1TelemetryHud: React.FC<F1TelemetryHudProps> = (props) => {
           ) : null}
         </div>
       </div>
+
+      {/* Driving keys, directly on screen: right edge, clear of the centre road
+          view and of the top-left timing tower; pointer-events-none except
+          the tiny hide / restore control, so steering, pedals and keys keep
+          working underneath it. Suppressed entirely while the MFD is
+          expanded, since the MFD grows up into this same right-edge band. */}
+      {props.drivingControls ?? props.controlsCheatSheet ? (
+        <KeysOverlay
+          rows={props.drivingControls?.rows ?? props.controlsCheatSheet ?? []}
+          mode={props.drivingControls?.mode ?? "keyboard"}
+          visible={keysOverlayVisible}
+          onHide={() => setKeysOverlayVisible(false)}
+          onShow={() => setKeysOverlayVisible(true)}
+          reopenLabel={props.keysOverlayKeyLabel}
+          suppressed={mfdExpanded}
+        />
+      ) : null}
       </>
       )}
 
@@ -549,7 +607,7 @@ export const F1TelemetryHud: React.FC<F1TelemetryHudProps> = (props) => {
           role="status"
           className={`lc-panel-in absolute bottom-6 left-1/2 inline-flex h-9 -translate-x-1/2 items-center rounded-full px-4 lc-title text-[13px] text-[#F5F7FA] ${HUD_GLASS}`}
         >
-          HUD hidden{props.hudToggleButton ? ` · ${props.hudToggleButton} brings it back` : ""}
+          HUD 已隐藏{props.hudToggleButton ? ` · 按 ${props.hudToggleButton} 可恢复显示` : ""}
         </div>
       ) : null}
 

@@ -1,0 +1,692 @@
+/**
+ * Scenery detail (src/lib/render/scenery-detail.ts): the shader patches land on three's current shader source, the
+ * right materials are patched (and nothing else), the rough-diffuse conversion's defines survive, and the tree bake
+ * turns the real Rwanda GLB's flat-shaded trees into rounded, tinted, occluded crowns.
+ *
+ *   npx tsx scripts/verify-scenery.ts
+ */
+import * as THREE from 'three';
+import {
+  applySceneryDetail,
+  FRAGMENT_PATCHES,
+  prepareTreeGeometry,
+  sceneryKind,
+  setSceneryQuality,
+  VERTEX_PATCHES,
+} from '../src/lib/render/scenery-detail';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { NodeIO } from '@gltf-transform/core';
+import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
+import { SCENERY_CREDITS, type SceneryCredit } from '../src/lib/render/scenery-credits';
+import { attachSceneryInstances, resetSceneryInstances, setSceneryDensity } from '../src/lib/render/scenery-instances';
+import { applySceneryTextures } from '../src/lib/render/scenery-textures';
+import sharp from 'sharp';
+import { SHADOW_PROXY_LAYER } from '../src/lib/render/layers';
+import { type GroundHit, TrackColliderQuery } from '../src/lib/sim/f12026-car/TrackColliderQuery';
+import { loadGlbGeometry } from './lib/glb-geometry';
+import { groundSampler } from './lib/rwanda-ground.mjs';
+
+let passed = 0;
+function check(name: string, cond: boolean, detail = ''): void {
+  if (!cond) {
+    console.error(`FAIL ${name} ${detail}`);
+    process.exit(1);
+  }
+  passed++;
+  console.log(`  ok  ${name}${detail ? `  (${detail})` : ''}`);
+}
+
+const count = (source: string, anchor: string) => source.split(anchor).length - 1;
+
+console.log('Shader anchors (three r' + THREE.REVISION + ')');
+for (const lib of ['standard', 'physical'] as const) {
+  const { vertexShader, fragmentShader } = THREE.ShaderLib[lib];
+  for (const [anchor] of VERTEX_PATCHES) check(`${lib} vertex: "${anchor}" exactly once`, count(vertexShader, anchor) === 1);
+  for (const [anchor] of FRAGMENT_PATCHES) check(`${lib} fragment: "${anchor}" exactly once`, count(fragmentShader, anchor) === 1);
+}
+// The fragment patches read `normal`, `faceDirection`, `vViewPosition`, `diffuseColor`, `roughnessFactor` and
+// `reflectedLight`: each must already be declared where its patch lands
+{
+  const frag = THREE.ShaderLib.physical.fragmentShader;
+  const at = (s: string) => frag.indexOf(s);
+  check('colour patch runs before the roughness and normal patches', at('#include <color_fragment>') < at('#include <roughnessmap_fragment>') && at('#include <roughnessmap_fragment>') < at('#include <normal_fragment_maps>'));
+  check('normal patch runs after normal_fragment_begin (normal, faceDirection)', at('#include <normal_fragment_begin>') < at('#include <normal_fragment_maps>'));
+  check('occlusion patch runs after the lights have filled reflectedLight', at('#include <lights_fragment_end>') < at('#include <aomap_fragment>'));
+  const vert = THREE.ShaderLib.physical.vertexShader;
+  check('vertex patch runs after objectNormal exists', vert.indexOf('#include <beginnormal_vertex>') < vert.indexOf('#include <begin_vertex>'));
+}
+
+console.log('Which materials');
+const named = (name: string, opts: THREE.MeshStandardMaterialParameters = {}) => Object.assign(new THREE.MeshStandardMaterial(opts), { name });
+check('Tree_Canopy is a tree', sceneryKind(named('Tree_Canopy')) === 'TREE');
+check('Grandstand_Canopy is a roof, Building_White a building', sceneryKind(named('Grandstand_Canopy')) === 'ROOF' && sceneryKind(named('Building_White')) === 'BUILDING');
+check('Lake_Water is water; Paint_White and Kerb_Yellow are paint', sceneryKind(named('Lake_Water')) === 'WATER' && sceneryKind(named('Paint_White')) === 'PAINT' && sceneryKind(named('Kerb_Yellow')) === 'PAINT');
+check('a textured material of the same name is left alone', sceneryKind(named('Tree_Canopy', { map: new THREE.Texture() })) === null);
+check("other circuits' names (TREE11A.002, Terrain_Grass) are left alone", sceneryKind(named('TREE11A.002')) === null && sceneryKind(named('Terrain_Grass')) === null);
+check('non-PBR materials are left alone', sceneryKind(Object.assign(new THREE.MeshBasicMaterial(), { name: 'Tree_Canopy' })) === null);
+
+console.log('Patching');
+{
+  // As scene-builder hands it over after the rough-diffuse conversion: a physical material with both defines
+  const paint = Object.assign(new THREE.MeshPhysicalMaterial(), { name: 'Paint_White' });
+  paint.defines = { STANDARD: '', PHYSICAL: '' };
+  check('the first call patches', applySceneryDetail(paint, { baseY: 3 }) === true);
+  check('a second call does nothing', applySceneryDetail(paint) === false);
+  check('defines merged, not replaced', 'STANDARD' in paint.defines! && 'PHYSICAL' in paint.defines! && 'SCENERY_PAINT' in paint.defines!);
+  check('one program key for every scenery material', paint.customProgramCacheKey() === 'scenery-detail-v1');
+  const shader = {
+    uniforms: {} as Record<string, THREE.IUniform>,
+    vertexShader: THREE.ShaderLib.physical.vertexShader,
+    fragmentShader: THREE.ShaderLib.physical.fragmentShader,
+  } as unknown as THREE.WebGLProgramParametersWithUniforms;
+  paint.onBeforeCompile(shader, undefined as unknown as THREE.WebGLRenderer);
+  check('every patch applied', shader.fragmentShader.includes('scnDetail') && shader.fragmentShader.includes('vSceneryAo') && shader.vertexShader.includes('vSceneryWorldNormal'));
+  check('uniforms wired, including the shared wet state', ['uSceneryDetail', 'uSceneryTime', 'uSceneryBaseY', 'uWetness', 'uRainIntensity', 'uWetTime'].every((u) => u in shader.uniforms));
+  check('per-material foot height', shader.uniforms.uSceneryBaseY.value === 3);
+  setSceneryQuality('low');
+  check('Low quality switches the noise off', shader.uniforms.uSceneryDetail.value === 0);
+  setSceneryQuality('high');
+  check('High switches it back on', shader.uniforms.uSceneryDetail.value === 1);
+
+  const canopy = named('Tree_Canopy');
+  applySceneryDetail(canopy, { treeShading: false });
+  check('no baked tree shading: no occlusion attribute expected, no vertex colours', !('SCENERY_AO' in canopy.defines!) && !canopy.vertexColors);
+  const trunk = named('Tree_Trunk');
+  applySceneryDetail(trunk, { treeShading: true });
+  check('baked tree shading: occlusion and vertex colours on', 'SCENERY_AO' in trunk.defines! && trunk.vertexColors);
+}
+
+console.log('Tree bake on the Rwanda GLB');
+{
+  const root = loadGlbGeometry('public/tracks/rwanda/rwanda_2026.glb');
+  const trees = root.getObjectByName('Env_Trees');
+  check('Env_Trees is in the GLB', !!trees);
+  const parts: THREE.Mesh[] = [];
+  trees!.traverse((o) => {
+    if (o instanceof THREE.Mesh) parts.push(o);
+  });
+  for (const name of ['Tree_Trunk', 'Tree_Canopy']) {
+    const mesh = parts.find((m) => m.userData.materialName === name);
+    check(`${name} primitive found`, !!mesh);
+    const g = mesh!.geometry;
+    const before = g.getAttribute('position').count;
+    const part = name === 'Tree_Trunk' ? 'trunk' : 'canopy';
+    check(`${name}: baked`, prepareTreeGeometry(g, part));
+    const n = g.getAttribute('normal');
+    const c = g.getAttribute('color');
+    const ao = g.getAttribute('sceneryAo');
+    check(`${name}: one piece per tree`, g.userData.sceneryTrees === 520, `${g.userData.sceneryTrees} trees`);
+    check(`${name}: vertex count unchanged`, g.getAttribute('position').count === before && n.count === before && c.count === before && ao.count === before);
+    let unit = 0;
+    let tintLo = Infinity;
+    let tintHi = -Infinity;
+    let aoLo = Infinity;
+    let aoHi = -Infinity;
+    for (let i = 0; i < before; i++) {
+      if (Math.abs(Math.hypot(n.getX(i), n.getY(i), n.getZ(i)) - 1) < 1e-4) unit++;
+      tintLo = Math.min(tintLo, c.getX(i), c.getY(i), c.getZ(i));
+      tintHi = Math.max(tintHi, c.getX(i), c.getY(i), c.getZ(i));
+      aoLo = Math.min(aoLo, ao.getX(i));
+      aoHi = Math.max(aoHi, ao.getX(i));
+    }
+    check(`${name}: unit normals`, unit === before, `${unit}/${before}`);
+    // ±12 % brightness times up to ±9 % hue drift: 0.80–1.22
+    check(`${name}: tint is a variation, not a recolour`, tintLo > 0.78 && tintHi < 1.24, `${tintLo.toFixed(2)}–${tintHi.toFixed(2)}`);
+    check(`${name}: occlusion darker at the foot, never black`, aoLo >= 0.44 && aoHi <= 1 && aoHi - aoLo > 0.3, `${aoLo.toFixed(2)}–${aoHi.toFixed(2)}`);
+    // Normals point away from the middle of their tree: out of the crown, or radially out of the trunk
+    const p = g.getAttribute('position');
+    const centre = new THREE.Vector3();
+    const per = part === 'trunk' ? 12 : 36;
+    let outward = 0;
+    for (let t = 0; t < before / per; t++) {
+      centre.set(0, 0, 0);
+      for (let k = 0; k < per; k++) centre.add(new THREE.Vector3(p.getX(t * per + k), p.getY(t * per + k), p.getZ(t * per + k)));
+      centre.divideScalar(per);
+      for (let k = 0; k < per; k++) {
+        const i = t * per + k;
+        const dx = p.getX(i) - centre.x;
+        const dz = p.getZ(i) - centre.z;
+        const dy = part === 'trunk' ? 0 : p.getY(i) - centre.y;
+        if (dx * n.getX(i) + dy * n.getY(i) + dz * n.getZ(i) > 0) outward++;
+      }
+    }
+    check(`${name}: normals face out of their tree`, outward / before > 0.97, `${((outward / before) * 100).toFixed(1)} %`);
+  }
+  check('a non-tree mesh is refused', !prepareTreeGeometry(new THREE.PlaneGeometry(10, 10, 1, 1), 'canopy'));
+}
+
+console.log('Instanced foliage (public/tracks/rwanda/scenery/foliage.glb)');
+void (async () => {
+  const FOLIAGE = 'public/tracks/rwanda/scenery/foliage.glb';
+  check('foliage GLB is there', existsSync(FOLIAGE));
+  const bytes = statSync(FOLIAGE).size;
+  check('foliage GLB stays small', bytes < 2.5e6, `${(bytes / 1e6).toFixed(2)} MB`);
+  const io = new NodeIO().registerExtensions(ALL_EXTENSIONS);
+  const doc = await io.read(FOLIAGE);
+  const rootNode = doc.getRoot().listScenes()[0]?.listChildren()[0];
+  const extras = (rootNode?.getExtras() ?? {}) as { replaces?: string[]; credits?: SceneryCredit[]; counts?: Record<string, number> };
+  check('it replaces Env_Trees and Env_Foliage', JSON.stringify(extras.replaces) === JSON.stringify(['Env_Trees', 'Env_Foliage']));
+  const ownCredits = (credits: SceneryCredit[] | undefined) => JSON.stringify(credits) === JSON.stringify(SCENERY_CREDITS.filter((c) => credits?.some((x) => x.id === c.id)));
+  check('its credits match the in-app credits', ownCredits(extras.credits) && (extras.credits?.length ?? 0) === 2);
+  const creditsMd = readFileSync('CREDITS.md', 'utf8');
+  check('CREDITS.md names every model and its source', SCENERY_CREDITS.every((c) => creditsMd.includes(c.url) && creditsMd.includes(c.author)));
+  check('every model is openly licensed (CC0 or CC BY)', SCENERY_CREDITS.every((c) => /^CC (0|BY 4\.0)$/.test(c.license)));
+
+  // Instances: count them per model and collect their base points (each tile's level 0; the other levels share them)
+  const bases: [number, number, number][] = [];
+  const perModel: Record<string, number> = {};
+  let tiles = 0;
+  type LevelExtras = { tile?: string; level?: number; from?: number; until?: number; shadow?: boolean; shadowFrom?: number };
+  const tileLevels = new Map<string, { level: number; extras: LevelExtras; mesh: string; translation: unknown }[]>();
+  for (const node of doc.getRoot().listNodes()) {
+    const inst = node.getExtension('EXT_mesh_gpu_instancing') as { getAttribute(n: string): { getCount(): number; getElement(i: number, out: number[]): number[] } | null } | null;
+    if (!inst) continue;
+    const ex = node.getExtras() as LevelExtras;
+    if (typeof ex.tile === 'string') {
+      if (!tileLevels.has(ex.tile)) tileLevels.set(ex.tile, []);
+      tileLevels.get(ex.tile)!.push({ level: ex.level ?? -1, extras: ex, mesh: node.getMesh()!.getName(), translation: inst.getAttribute('TRANSLATION') });
+    }
+    if ((ex.level ?? 0) > 0) continue;
+    tiles++;
+    const t = inst.getAttribute('TRANSLATION')!;
+    const model = node.getMesh()!.getName();
+    perModel[model] = (perModel[model] ?? 0) + t.getCount();
+    const v = [0, 0, 0];
+    for (let i = 0; i < t.getCount(); i++) bases.push(t.getElement(i, v).slice() as [number, number, number]);
+  }
+  check('instances split into tiles (so they cull)', tiles > 20, `${tiles} tiles`);
+  check('instance counts match the file\'s own record', perModel.Acacia === extras.counts?.acacia && perModel.Shrub === extras.counts?.shrub, JSON.stringify(perModel));
+  // Every one of the 520 trees and 1,900 cards gets a stand-in (a tree, or two shrubs for a low bush card), except the
+  // few the circuit's own layout put on a driving surface
+  const skippedOnTrack = extras.counts?.skippedOnTrack ?? NaN;
+  const standIns = perModel.Acacia + perModel.Shrub / 2 + skippedOnTrack / 2;
+  check('every replaced tree and card has its stand-in', perModel.Acacia >= 1040 && Math.abs(standIns - (520 + 528 + 1372)) <= skippedOnTrack / 2 + 0.5, `${JSON.stringify(perModel)}, ${skippedOnTrack} skipped`);
+  check('only a handful were skipped for standing on a driving surface', skippedOnTrack <= 5, `${skippedOnTrack}`);
+
+  // Levels of detail: every tile has its lighter levels, sharing its instances; each lighter, with the same leaf area
+  const levelsOk = [...tileLevels.entries()].every(([tile, list]) => {
+    const want = tile.startsWith('acacia') ? [0, 1, 2] : [0, 1];
+    const got = list.map((l) => l.level).sort();
+    return JSON.stringify(got) === JSON.stringify(want) && list.every((l) => l.translation === list[0].translation);
+  });
+  check('every tile has its levels of detail, sharing its instances', tileLevels.size === tiles && levelsOk, `${tileLevels.size} tiles`);
+  const byMesh = Object.fromEntries(doc.getRoot().listMeshes().map((m) => [m.getName(), m]));
+  const tris = (name: string) => byMesh[name].listPrimitives().reduce((sum, p) => sum + p.getIndices()!.getCount() / 3, 0);
+  const leafArea = (name: string) => {
+    let area = 0;
+    for (const p of byMesh[name].listPrimitives()) {
+      if (p.getMaterial()?.getAlphaMode() !== 'MASK') continue;
+      const pos = p.getAttribute('POSITION')!;
+      const idx = p.getIndices()!;
+      const a = [0, 0, 0];
+      const b = [0, 0, 0];
+      const c = [0, 0, 0];
+      for (let t = 0; t < idx.getCount(); t += 3) {
+        pos.getElement(idx.getScalar(t), a);
+        pos.getElement(idx.getScalar(t + 1), b);
+        pos.getElement(idx.getScalar(t + 2), c);
+        const e1 = b.map((x, k) => x - a[k]);
+        const e2 = c.map((x, k) => x - a[k]);
+        area += 0.5 * Math.hypot(e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]);
+      }
+    }
+    return area;
+  };
+  check('acacia level 1 is at most 35 % of its triangles, level 2 at most 12 %', tris('Acacia_LOD1') <= 0.35 * tris('Acacia') && tris('Acacia_LOD2') <= 0.12 * tris('Acacia'), `${tris('Acacia')} / ${tris('Acacia_LOD1')} / ${tris('Acacia_LOD2')}`);
+  check('shrub level 1 is at most 41 % of its triangles', tris('Shrub_LOD1') <= 0.41 * tris('Shrub'), `${tris('Shrub')} / ${tris('Shrub_LOD1')}`);
+  const areaRatio = ['Acacia_LOD1', 'Acacia_LOD2', 'Shrub_LOD1'].map((m) => leafArea(m) / leafArea(m.replace(/_LOD\d$/, '')));
+  check('the lighter levels keep the crowns\' leaf area (±25 %)', areaRatio.every((r) => r > 0.75 && r < 1.25), areaRatio.map((r) => r.toFixed(2)).join(', '));
+  const sample = (prefix: string, level: number) => [...tileLevels.values()].flat().find((l) => l.mesh.startsWith(prefix) && l.level === level)?.extras;
+  check('levels switch at 80 / 520 m from a tile\'s trees, shrubs stop at 270 m', sample('Acacia', 1)?.from === 80 && sample('Acacia', 2)?.from === 520 && sample('Shrub', 1)?.from === 80 && sample('Shrub', 1)?.until === 270);
+  check('near trees cast in full, the middle distance through level 2\'s crowns, the furthest and far shrubs not at all', sample('Acacia', 0)?.shadow === true && sample('Acacia', 1)?.shadow === false && sample('Acacia', 1)?.shadowFrom === 2 && sample('Acacia', 2)?.shadow === false && !sample('Acacia', 2)?.shadowFrom && sample('Shrub', 1)?.shadow === false);
+
+  // Leaf cards: alpha-masked, and their normals baked to face out of the crown (shaded as one volume)
+  const leafPrims = doc
+    .getRoot()
+    .listMeshes()
+    .filter((m) => !/_LOD\d$/.test(m.getName()))
+    .flatMap((m) => m.listPrimitives())
+    .filter((p) => p.getMaterial()?.getAlphaMode() === 'MASK');
+  check('both models have alpha-masked leaves', leafPrims.length === 2, `${leafPrims.length}`);
+  for (const prim of leafPrims) {
+    const pos = prim.getAttribute('POSITION')!;
+    const nor = prim.getAttribute('NORMAL')!;
+    const lo = pos.getMin([0, 0, 0]);
+    const hi = pos.getMax([0, 0, 0]);
+    const c = lo.map((l, k) => (l + hi[k]) / 2);
+    const p = [0, 0, 0];
+    const n = [0, 0, 0];
+    let out = 0;
+    for (let i = 0; i < pos.getCount(); i++) {
+      pos.getElement(i, p);
+      nor.getElement(i, n);
+      if (n[0] * (p[0] - c[0]) + n[1] * (p[1] - c[1]) + n[2] * (p[2] - c[2]) > 0) out++;
+    }
+    const share = out / pos.getCount();
+    check(`${prim.getMaterial()!.getName()}: leaf normals face out of the crown`, share > 0.97, `${(share * 100).toFixed(1)} %`);
+  }
+
+  // Nothing grows on the track: the ground under each trunk / shrub is not road, kerb or pit lane
+  const track = loadGlbGeometry('public/tracks/rwanda/rwanda_2026.glb');
+  const ground = TrackColliderQuery.fromTrackRoot(track);
+  const hit = {} as GroundHit;
+  let onTrack = 0;
+  let floating = 0;
+  let buried = 0;
+  for (const [x, y, z] of bases) {
+    if (!ground.query(x, z, y + 5, hit)) continue;
+    if (hit.surface === 'road' || hit.surface === 'kerb' || hit.surface === 'sausage' || hit.surface === 'pitlane') onTrack++;
+    if (y > hit.height + 0.05) floating++;
+    if (y < hit.height - 0.5) buried++;
+  }
+  check('no tree or shrub stands on the road, kerbs or pit lane', onTrack === 0, `${onTrack} of ${bases.length}`);
+  check('none floats above the ground', floating === 0, `${floating} of ${bases.length}`);
+  check('none is buried in it (bases sit just under the surface)', buried === 0, `${buried} of ${bases.length}`);
+
+  console.log('Generated stands (public/tracks/rwanda/scenery/stands.glb)');
+  {
+    const STANDS = 'public/tracks/rwanda/scenery/stands.glb';
+    check('stands GLB is there', existsSync(STANDS));
+    const sBytes = statSync(STANDS).size;
+    check('stands GLB stays small', sBytes < 1.5e6, `${(sBytes / 1e6).toFixed(2)} MB`);
+    const sDoc = await io.read(STANDS);
+    const sRoot = sDoc.getRoot().listScenes()[0]?.listChildren()[0];
+    const sExtras = (sRoot?.getExtras() ?? {}) as { replaces?: string[]; counts?: Record<string, number> };
+    const REPLACED = ['Prop_Grandstand_01', 'Prop_Grandstand_02', 'Prop_Grandstand_04', 'Prop_Grandstand_05', 'Prop_Stands_Open', 'Prop_MediaCentre'];
+    check('it replaces the grandstands, open stands and media centre', JSON.stringify(sExtras.replaces) === JSON.stringify(REPLACED));
+    const standNodes = sRoot?.listChildren() ?? [];
+    const kinds = standNodes.map((n) => (n.getExtras() as { stands?: string }).stands);
+    check('4 roofed stands, 14 open ones and the media centre', kinds.filter((k) => k === 'roofed').length === 4 && kinds.filter((k) => k === 'open').length === 14 && kinds.filter((k) => k === 'media').length === 1, JSON.stringify(sExtras.counts));
+    check('every replaced node exists in the circuit', REPLACED.every((n) => track.getObjectByName(n)));
+
+    // The roofed ones sit exactly where the circuit's do
+    const circuitDoc = await io.read('public/tracks/rwanda/rwanda_2026.glb');
+    const circuitNode = (name: string) => circuitDoc.getRoot().listNodes().find((n) => n.getName() === name)!;
+    const sameTRS = ['01', '02', '04', '05'].every((id) => {
+      const a = circuitNode(`Prop_Grandstand_${id}`);
+      const b = standNodes.find((n) => n.getName() === `Scenery_Grandstand_${id}`);
+      return !!b && a.getTranslation().every((v, i) => Math.abs(v - b.getTranslation()[i]) < 1e-4) && a.getRotation().every((v, i) => Math.abs(v - b.getRotation()[i]) < 1e-6);
+    });
+    check('each roofed grandstand keeps its circuit transform', sameTRS);
+
+    // Footprints (from each node's extras) cover the stands they replace, and stand on nothing that is driven on
+    type Footprint = { x: number; z: number; yaw: number; length: number; depth: number; baseY: number };
+    const footprints = standNodes.map((n) => ({ kind: (n.getExtras() as { stands: string }).stands, ...(n.getExtras() as { footprint: Footprint }).footprint }));
+    const inside = (f: Footprint, x: number, z: number, margin: number) => {
+      const dx = x - f.x;
+      const dz = z - f.z;
+      const lx = dx * Math.cos(f.yaw) - dz * Math.sin(f.yaw);
+      const lz = dx * Math.sin(f.yaw) + dz * Math.cos(f.yaw);
+      return Math.abs(lx) <= f.length / 2 + margin && Math.abs(lz) <= f.depth / 2 + margin;
+    };
+    const covered = (name: string, kind: string) => {
+      let n = 0;
+      let inn = 0;
+      const v = new THREE.Vector3();
+      track.getObjectByName(name)!.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh) return;
+        m.updateWorldMatrix(true, false);
+        const pos = m.geometry.getAttribute('position');
+        for (let i = 0; i < pos.count; i += 3) {
+          v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+          n++;
+          if (footprints.some((f) => f.kind === kind && inside(f, v.x, v.z, 1.5))) inn++;
+        }
+      });
+      return inn / n;
+    };
+    const openCover = covered('Prop_Stands_Open', 'open');
+    check("the open stands cover the circuit's open stands", openCover > 0.99, `${(openCover * 100).toFixed(1)} % of their vertices`);
+    const mediaCover = covered('Prop_MediaCentre', 'media');
+    check("the media centre covers the circuit's", mediaCover > 0.99, `${(mediaCover * 100).toFixed(1)} %`);
+    const roofedCover = ['01', '02', '04', '05'].map((id) => covered(`Prop_Grandstand_${id}`, 'roofed'));
+    check("the roofed stands cover the circuit's", roofedCover.every((c) => c > 0.99), roofedCover.map((c) => `${(c * 100).toFixed(1)} %`).join(', '));
+
+    const stands = loadGlbGeometry(STANDS);
+    stands.updateMatrixWorld(true);
+    let onTrack = 0;
+    let floating = 0;
+    let verts = 0;
+    const v = new THREE.Vector3();
+    stands.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      const pos = m.geometry.getAttribute('position');
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i);
+        // Legs, columns and walls reach below the stand's base (local y 0)
+        const isFoot = v.y < -0.3;
+        v.applyMatrix4(m.matrixWorld);
+        verts++;
+        if (!ground.query(v.x, v.z, v.y + 40, hit)) continue;
+        if (hit.surface === 'road' || hit.surface === 'kerb' || hit.surface === 'sausage' || hit.surface === 'pitlane') onTrack++;
+        if (isFoot && v.y > hit.height + 0.05) floating++;
+      }
+    });
+    check('no part of a stand stands over the road, kerbs or pit lane', onTrack === 0, `${onTrack} of ${verts} vertices`);
+    check('every foot reaches the ground', floating === 0, `${floating} floating`);
+
+    // The owner's lettering, unchanged; nothing left of the third-party pack
+    const ownTex = sDoc.getRoot().listTextures().find((t) => t.getName() === 'KN5_Rwanda text italics grandstand');
+    const circuitTex = circuitDoc.getRoot().listTextures().find((t) => t.getName() === 'KN5_Rwanda text italics grandstand');
+    check('the "Rwanda" roof lettering is the circuit\'s own, byte for byte', !!ownTex && !!circuitTex && Buffer.from(ownTex.getImage()!).equals(Buffer.from(circuitTex.getImage()!)));
+    const names = [
+      ...sDoc.getRoot().listMaterials(),
+      ...sDoc.getRoot().listTextures(),
+      ...sDoc.getRoot().listMeshes(),
+      ...sDoc.getRoot().listNodes(),
+    ].map((x) => x.getName());
+    const packNames = names.filter((n) => /bah_|gstand|structures-|rust-detail|media_center/i.test(n));
+    check("no name from the track pack's models is left", packNames.length === 0, packNames.join(', '));
+    const flat = sDoc.getRoot().listMaterials().filter((m) => !m.getBaseColorTexture()).map((m) => m.getName());
+    check('concrete and roofs use the names scenery-detail weathers', flat.includes('Building_White') && flat.includes('Grandstand_Canopy'));
+  }
+
+  console.log('Generated props (public/tracks/rwanda/scenery/props.glb)');
+  {
+    const PROPS = 'public/tracks/rwanda/scenery/props.glb';
+    check('props GLB is there', existsSync(PROPS));
+    const pBytes = statSync(PROPS).size;
+    check('props GLB stays small', pBytes < 1e6, `${(pBytes / 1e6).toFixed(2)} MB`);
+    const pDoc = await io.read(PROPS);
+    const pRoot = pDoc.getRoot().listScenes()[0]?.listChildren()[0];
+    const pExtras = (pRoot?.getExtras() ?? {}) as { replaces?: string[]; counts?: Record<string, number>; credits?: SceneryCredit[] };
+    const PROP_NODES = ['Prop_Jumbotron_0', 'Prop_Jumbotron_1', 'Prop_Jumbotron_2', 'Prop_StartLights_0', 'Prop_PitExitLight', 'Prop_RadioMasts', 'Prop_Paddock_Tents', 'Prop_CameraPosts', 'Prop_Helicopter'];
+    check('it replaces the nine prop nodes', JSON.stringify(pExtras.replaces) === JSON.stringify(PROP_NODES) && PROP_NODES.every((n) => track.getObjectByName(n)));
+    check('3 jumbotrons, 2 masts, 29 tents, 7 camera platforms, the lights and the helicopter', JSON.stringify(pExtras.counts) === JSON.stringify({ jumbotron: 3, startLights: 1, pitExitLight: 1, radioMast: 2, tent: 29, cameraPlatform: 7, helicopter: 1 }), JSON.stringify(pExtras.counts));
+    check('its credits match the in-app credits', ownCredits(pExtras.credits) && pExtras.credits?.[0]?.id === 'helicopter');
+
+    const circuitDoc = await io.read('public/tracks/rwanda/rwanda_2026.glb');
+    const circuitNode = (name: string) => circuitDoc.getRoot().listNodes().find((n) => n.getName() === name)!;
+    const propNode = (name: string) => pRoot!.listChildren().find((n) => n.getName() === name);
+    const localBox = (node: { getMesh(): { listPrimitives(): { getAttribute(s: string): { getMin(o: number[]): number[]; getMax(o: number[]): number[] } | null }[] } | null }) => {
+      const lo = [Infinity, Infinity, Infinity];
+      const hi = [-Infinity, -Infinity, -Infinity];
+      for (const p of node.getMesh()!.listPrimitives()) {
+        const a = p.getAttribute('POSITION')!.getMin([0, 0, 0]);
+        const b = p.getAttribute('POSITION')!.getMax([0, 0, 0]);
+        for (let k = 0; k < 3; k++) {
+          lo[k] = Math.min(lo[k], a[k]);
+          hi[k] = Math.max(hi[k], b[k]);
+        }
+      }
+      return { lo, hi };
+    };
+    // The start lights: the game's pods snap to this box, so it must be the circuit's own (±2 cm) at its transform
+    const oldLights = localBox(circuitNode('Prop_StartLights_0'));
+    const newLightsNode = propNode('Scenery_StartLights_0')!;
+    const newLights = localBox(newLightsNode);
+    const boxDiff = Math.max(...[0, 1, 2].flatMap((k) => [Math.abs(oldLights.lo[k] - newLights.lo[k]), Math.abs(oldLights.hi[k] - newLights.hi[k])]));
+    check('the start lights keep the circuit assembly\'s box (the pods snap to it)', boxDiff < 0.02, `${(boxDiff * 100).toFixed(1)} cm`);
+    const sameTRS = (a: string, b: string) => {
+      const x = circuitNode(a);
+      const y = propNode(b);
+      return !!y && x.getTranslation().every((v, i) => Math.abs(v - y.getTranslation()[i]) < 1e-4) && x.getRotation().every((v, i) => Math.abs(v - y.getRotation()[i]) < 1e-6);
+    };
+    check('start lights, pit light and jumbotrons keep their circuit transforms', ['StartLights_0', 'PitExitLight', 'Jumbotron_0', 'Jumbotron_1', 'Jumbotron_2'].every((n) => sameTRS(`Prop_${n}`, `Scenery_${n}`)));
+    const lensRows = newLightsNode.getMesh()!.listPrimitives().map((p) => p.getMaterial()!.getName()).filter((n) => n.startsWith('Lens_')).sort();
+    check('the start lights have amber, green and red lenses', JSON.stringify(lensRows) === JSON.stringify(['Lens_Amber', 'Lens_Green', 'Lens_Red']));
+
+    // The owner's jumbotron screen, unchanged
+    const screenOwn = pDoc.getRoot().listTextures().find((t) => t.getName() === 'TX_screen');
+    const screenCircuit = circuitDoc.getRoot().listTextures().find((t) => t.getName() === 'TX_screen');
+    check('the jumbotron screen texture is the circuit\'s own, byte for byte', !!screenOwn && !!screenCircuit && Buffer.from(screenOwn.getImage()!).equals(Buffer.from(screenCircuit.getImage()!)));
+    const screenPrim = (doc0: typeof pDoc, nodeName: string) =>
+      doc0
+        .getRoot()
+        .listNodes()
+        .find((n) => n.getName() === nodeName)!
+        .getMesh()!
+        .listPrimitives()
+        .find((p) => p.getMaterial()?.getBaseColorTexture()?.getName() === 'TX_screen')!;
+    const so = screenPrim(circuitDoc, 'Prop_Jumbotron_0');
+    const sn = screenPrim(pDoc, 'Scenery_Jumbotron_0');
+    const sameArr = (a: ArrayLike<number> | null | undefined, b: ArrayLike<number> | null | undefined) => !!a && !!b && a.length === b.length && Array.from(a).every((v, i) => Math.abs(v - b[i]) < 1e-6);
+    check('and its screen quad is the circuit\'s, vertex for vertex (positions and UVs)', sameArr(so.getAttribute('POSITION')?.getArray(), sn.getAttribute('POSITION')?.getArray()) && sameArr(so.getAttribute('TEXCOORD_0')?.getArray(), sn.getAttribute('TEXCOORD_0')?.getArray()));
+
+    // Merged props: every vertex of the circuit's objects lies in a replacement's footprint
+    type Fp = { x: number; z: number; yaw: number; length: number; depth: number };
+    const fps = pRoot!.listChildren().map((n) => ({ kind: (n.getExtras() as { props: string }).props, fp: (n.getExtras() as { footprint?: Fp }).footprint }));
+    const insideFp = (f: Fp, x: number, z: number, m: number) => {
+      const dx = x - f.x;
+      const dz = z - f.z;
+      return Math.abs(dx * Math.cos(f.yaw) - dz * Math.sin(f.yaw)) <= f.length / 2 + m && Math.abs(dx * Math.sin(f.yaw) + dz * Math.cos(f.yaw)) <= f.depth / 2 + m;
+    };
+    for (const [name, kind] of [
+      ['Prop_RadioMasts', 'radioMast'],
+      ['Prop_Paddock_Tents', 'tent'],
+      ['Prop_CameraPosts', 'cameraPlatform'],
+    ] as const) {
+      let n = 0;
+      let inn = 0;
+      const v = new THREE.Vector3();
+      track.getObjectByName(name)!.traverse((o) => {
+        const m = o as THREE.Mesh;
+        if (!m.isMesh) return;
+        m.updateWorldMatrix(true, false);
+        const pos = m.geometry.getAttribute('position');
+        for (let i = 0; i < pos.count; i += 2) {
+          v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+          n++;
+          if (fps.some((f) => f.kind === kind && f.fp && insideFp(f.fp, v.x, v.z, 0.5))) inn++;
+        }
+      });
+      check(`${kind}: the replacements cover the circuit's`, inn / n > 0.99, `${((100 * inn) / n).toFixed(1)} %`);
+    }
+
+    // Nothing over a driving surface, every foot on the ground. Feet are checked against the visible ground (the
+    // highest surface under them): in places a run-off collider runs under the hill's grass
+    const visibleGround = groundSampler(circuitDoc) as (x: number, z: number, probeY?: number) => { height: number; surface: string } | null;
+    const props = loadGlbGeometry(PROPS);
+    props.updateMatrixWorld(true);
+    let overTrack = 0;
+    let floatingFeet = 0;
+    let feet = 0;
+    const v = new THREE.Vector3();
+    props.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      // The start lights hang over the grid from the gantry; the pit light stands at the pit exit
+      let top: THREE.Object3D | null = m;
+      while (top && top.parent && top.parent !== props && top.parent.name !== 'Scenery_Props') top = top.parent;
+      if (/StartLights|PitExitLight/.test(top?.name ?? '')) return;
+      const pos = m.geometry.getAttribute('position');
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i);
+        const isFoot = v.y < -0.3;
+        v.applyMatrix4(m.matrixWorld);
+        if (!ground.query(v.x, v.z, v.y + 40, hit)) continue;
+        if (hit.surface === 'road' || hit.surface === 'kerb' || hit.surface === 'sausage' || hit.surface === 'pitlane') overTrack++;
+        if (isFoot) {
+          feet++;
+          const g = visibleGround(v.x, v.z, v.y + 40);
+          if (g && v.y > g.height + 0.05) floatingFeet++;
+        }
+      }
+    });
+    check('no prop stands over the road, kerbs or pit lane', overTrack === 0, `${overTrack} vertices`);
+    check('every leg and footing reaches the ground', feet > 0 && floatingFeet === 0, `${floatingFeet} of ${feet} floating`);
+
+    const pNames = [...pDoc.getRoot().listMaterials(), ...pDoc.getRoot().listTextures(), ...pDoc.getRoot().listMeshes(), ...pDoc.getRoot().listNodes()].map((x) => x.getName());
+    const pack = pNames.filter((n) => /jumbotron_b|marquee|tower_radiomast|cameraman|helicopter_a|lg_pit|core_start|Leclerc|Wolf3D/i.test(n));
+    check("no name from the track pack's models (or the helicopter's figure) is left", pack.length === 0, pack.join(', '));
+  }
+
+  console.log('Own textures on the circuit (public/tracks/rwanda/scenery/textures/)');
+  {
+    const DIR = 'public/tracks/rwanda/scenery/textures';
+    const manifest = JSON.parse(readFileSync(`${DIR}/textures.json`, 'utf8')) as { textures: { material: string; file: string; width: number; height: number; alpha: boolean; replaces: string }[] };
+    const want = ['Barrier_Armco', 'Fence_Debris', 'PitWall', 'KN5_Metal_D'];
+    check('the four pack-textured materials are listed', JSON.stringify(manifest.textures.map((t) => t.material)) === JSON.stringify(want));
+    const circuitDoc = await io.read('public/tracks/rwanda/rwanda_2026.glb');
+    const mats = Object.fromEntries(circuitDoc.getRoot().listMaterials().map((m) => [m.getName(), m]));
+    check('each is a textured material in the circuit', want.every((m) => mats[m]?.getBaseColorTexture()));
+    let total = 0;
+    for (const t of manifest.textures) {
+      const file = `${DIR}/${t.file}`;
+      total += statSync(file).size;
+      const meta = await sharp(file).metadata();
+      const orig = mats[t.material].getBaseColorTexture()!;
+      const [ow, oh] = orig.getSize()!;
+      check(`${t.material}: same size as the image it replaces (its UVs were made for it)`, meta.width === ow && meta.height === oh, `${meta.width}×${meta.height}`);
+      if (t.alpha) {
+        const cover = async (buf: Buffer) => {
+          const { data, info } = await sharp(buf).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+          let n = 0;
+          for (let i = 3; i < data.length; i += 4) n += data[i] > 128 ? 1 : 0;
+          return n / (info.width * info.height);
+        };
+        const a = await cover(readFileSync(file));
+        const b = await cover(Buffer.from(orig.getImage()!));
+        check(`${t.material}: the mesh covers as much as the original (±10 %)`, Math.abs(a / b - 1) < 0.1, `${(a * 100).toFixed(1)} % vs ${(b * 100).toFixed(1)} %`);
+      }
+    }
+    check('the textures stay small', total < 400e3, `${(total / 1024).toFixed(0)} KB`);
+    check("no file is named after the pack's images", manifest.textures.every((t) => !/guardrail|fences2|bah_|metal_d/i.test(t.file)));
+
+    // Runtime: only the listed materials change, keeping the old sampler settings
+    const oldMap = new THREE.Texture();
+    oldMap.flipY = false;
+    oldMap.colorSpace = THREE.SRGBColorSpace;
+    oldMap.wrapS = oldMap.wrapT = THREE.RepeatWrapping;
+    oldMap.repeat.set(3, 1);
+    const armco = Object.assign(new THREE.MeshStandardMaterial({ map: oldMap }), { name: 'Barrier_Armco' });
+    const other = Object.assign(new THREE.MeshStandardMaterial({ map: oldMap }), { name: 'Track_Asphalt' });
+    const troot = new THREE.Group();
+    troot.add(new THREE.Mesh(new THREE.PlaneGeometry(), armco), new THREE.Mesh(new THREE.PlaneGeometry(), armco), new THREE.Mesh(new THREE.PlaneGeometry(), other));
+    const fresh = new THREE.Texture();
+    const swapped = applySceneryTextures(troot, new Map([['Barrier_Armco', fresh]]));
+    check('the swap reaches the listed material once, and nothing else', swapped === 1 && armco.map !== oldMap && other.map === oldMap);
+    check('the new map keeps the old one\'s sampler (unflipped glTF UVs, wrap, repeat, sRGB)', !armco.map!.flipY && armco.map!.wrapS === THREE.RepeatWrapping && armco.map!.repeat.x === 3 && armco.map!.colorSpace === THREE.SRGBColorSpace);
+  }
+
+  console.log('Instanced foliage at runtime (scenery-instances.ts)');
+  {
+    const trackRoot = new THREE.Group();
+    const oldTrees = Object.assign(new THREE.Group(), { name: 'Env_Trees' });
+    const oldCards = Object.assign(new THREE.Group(), { name: 'Env_Foliage' });
+    trackRoot.add(oldTrees, oldCards);
+    const leaves = new THREE.MeshStandardMaterial({ map: new THREE.Texture(), alphaTest: 0.45 });
+    const bark = new THREE.MeshStandardMaterial({ map: new THREE.Texture() });
+    const tile = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), [bark, leaves], 40);
+    const scenery = new THREE.Group();
+    scenery.userData.replaces = ['Env_Trees', 'Env_Foliage'];
+    scenery.add(tile);
+    resetSceneryInstances();
+    setSceneryDensity('high');
+    attachSceneryInstances(trackRoot, scenery);
+    check('the replaced circuit nodes are hidden', !oldTrees.visible && !oldCards.visible);
+    check('the scenery hangs under the circuit', scenery.parent === trackRoot);
+    check('tiles cast and receive shadows, and cull', tile.castShadow && tile.receiveShadow && tile.frustumCulled && tile.boundingSphere !== null);
+    setSceneryDensity('low');
+    check('Low quality draws half of each tile', tile.count === 20, `${tile.count}`);
+    setSceneryDensity('medium');
+    check('Medium draws 80 %', tile.count === 32, `${tile.count}`);
+    setSceneryDensity('high');
+    check('High draws them all', tile.count === 40, `${tile.count}`);
+
+    check('only the alpha-tested leaves get the leaf shader', leaves.userData.leafShading === true && !bark.userData.leafShading);
+    // The patch is string replacement on three's chunks: if an upgrade renames one, these fail instead of the leaves
+    // silently losing their shading
+    const shader = {
+      uniforms: {} as Record<string, THREE.IUniform>,
+      vertexShader: THREE.ShaderLib.standard.vertexShader,
+      fragmentShader: THREE.ShaderLib.standard.fragmentShader,
+    } as unknown as THREE.WebGLProgramParametersWithUniforms;
+    leaves.onBeforeCompile(shader, undefined as unknown as THREE.WebGLRenderer);
+    const frag = shader.fragmentShader;
+    check('leaf coverage scales alpha by the mip level, before the alpha test', frag.includes('leafMip') && frag.indexOf('leafMip') < frag.indexOf('#include <alphatest_fragment>'));
+    check('a card seen from behind keeps its crown normal', !frag.includes('#include <normal_fragment_begin>') && !frag.includes('normal *= faceDirection;') && frag.includes('faceDirection'));
+    check('leaf specular is damped after the lighting setup', frag.indexOf('material.specularColorBlended *= 0.2;') > frag.indexOf('#include <lights_physical_fragment>'));
+    check('the leaf program has its own cache key', leaves.customProgramCacheKey() === 'scenery-leaf-v3');
+
+    // A tile with levels of detail: grouped under a LOD at the tile's centre, nothing moved
+    const lodTrack = new THREE.Group();
+    const lodScenery = new THREE.Group();
+    const near = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), leaves, 10);
+    const far = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), leaves, 10);
+    const m4 = new THREE.Matrix4();
+    for (let i = 0; i < 10; i++) {
+      m4.makeTranslation(500 + i * 10, 30, -200);
+      near.setMatrixAt(i, m4);
+      far.setMatrixAt(i, m4);
+    }
+    near.userData = { tile: 'acacia:2:-1', level: 0, from: 0, shadow: true };
+    far.userData = { tile: 'acacia:2:-1', level: 1, from: 80, shadow: false, shadowFrom: 2 };
+    const furthest = new THREE.Group();
+    const furthestLeaves = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), leaves, 10);
+    furthestLeaves.instanceMatrix.copy(near.instanceMatrix);
+    furthest.add(furthestLeaves);
+    furthest.userData = { tile: 'acacia:2:-1', level: 2, from: 520, shadow: false };
+    lodScenery.add(near, far, furthest);
+    resetSceneryInstances();
+    attachSceneryInstances(lodTrack, lodScenery);
+    const lodObj = lodScenery.getObjectByName('Scenery_Tile_acacia:2:-1') as THREE.LOD | undefined;
+    check('a tile\'s levels go under one LOD', !!lodObj?.isLOD && near.parent === lodObj && far.parent === lodObj && lodObj.levels.map((l) => l.distance).join() === '0,80,520');
+    lodTrack.updateMatrixWorld(true);
+    const firstTree = new THREE.Vector3();
+    near.getMatrixAt(0, m4);
+    firstTree.setFromMatrixPosition(m4.premultiply(near.matrixWorld));
+    check('nothing moves when the levels are regrouped', firstTree.distanceTo(new THREE.Vector3(500, 30, -200)) < 1e-3, firstTree.toArray().map((v) => v.toFixed(2)).join(','));
+    check('only the levels marked so cast shadows', near.castShadow && !far.castShadow && !furthestLeaves.castShadow);
+    const proxy = far.children.find((c) => (c as THREE.InstancedMesh).isInstancedMesh) as THREE.InstancedMesh | undefined;
+    check('the middle level casts through a shadow-only copy of level 2', !!proxy && proxy.castShadow && proxy.geometry === furthestLeaves.geometry && proxy.instanceMatrix === furthestLeaves.instanceMatrix);
+    check('which only the sun\'s shadow camera draws', !!proxy && proxy.layers.mask === 1 << SHADOW_PROXY_LAYER && !proxy.layers.test(new THREE.Camera().layers));
+    const cam = new THREE.PerspectiveCamera();
+    cam.position.set(545, 32, -190);
+    cam.updateMatrixWorld();
+    lodObj!.update(cam);
+    const nearPick = near.visible && !far.visible;
+    cam.position.set(545, 32, -500);
+    cam.updateMatrixWorld();
+    lodObj!.update(cam);
+    const midPick = !near.visible && far.visible && !furthest.visible;
+    cam.position.set(545, 32, -800);
+    cam.updateMatrixWorld();
+    lodObj!.update(cam);
+    check('close to the tile\'s trees the full ones draw, 300 m out level 1, 600 m out level 2', nearPick && midPick && !near.visible && !far.visible && furthest.visible);
+    // Distance is to the trees, not the tile's centre: 50 m off its far end still draws them in full
+    cam.position.set(640, 32, -200);
+    cam.updateMatrixWorld();
+    lodObj!.update(cam);
+    check('the level is picked by distance to the nearest tree, not the tile centre', near.visible && !far.visible);
+    setSceneryDensity('low');
+    check('density reaches every level and the shadow copy', near.count === 5 && far.count === 5 && proxy?.count === 5, `${near.count}, ${far.count}, ${proxy?.count}`);
+    setSceneryDensity('high');
+
+    // A generated stand: plain meshes; each gets its own patched copy of a flat scenery material, at its own foot
+    const concrete = Object.assign(new THREE.MeshStandardMaterial(), { name: 'Building_White' });
+    const seats = Object.assign(new THREE.MeshStandardMaterial({ map: new THREE.Texture() }), { name: 'Stand_Seat_Blue' });
+    const standA = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), concrete);
+    const standB = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), concrete);
+    const seatRow = new THREE.Mesh(new THREE.BoxGeometry(2, 1, 1), seats);
+    standA.position.y = 21;
+    standB.position.y = 91;
+    const standsRoot = new THREE.Group();
+    standsRoot.userData.replaces = ['Prop_Stands_Open'];
+    standsRoot.add(standA, standB, seatRow);
+    const oldStands = Object.assign(new THREE.Group(), { name: 'Prop_Stands_Open' });
+    trackRoot.add(oldStands);
+    attachSceneryInstances(trackRoot, standsRoot);
+    const matA = standA.material as THREE.MeshStandardMaterial;
+    const matB = standB.material as THREE.MeshStandardMaterial;
+    check('a stand file hides what it replaces too', !oldStands.visible);
+    check('stands cast and receive shadows', standA.castShadow && standA.receiveShadow && seatRow.castShadow);
+    check('each stand gets its own copy of the concrete, the original untouched', matA !== concrete && matB !== concrete && matA !== matB && concrete.customProgramCacheKey() !== 'scenery-detail-v1');
+    check('the copies get the scenery detail', matA.customProgramCacheKey() === 'scenery-detail-v1' && matB.customProgramCacheKey() === 'scenery-detail-v1');
+    const footOf = (mat: THREE.MeshStandardMaterial) => {
+      const sh = { uniforms: {} as Record<string, THREE.IUniform>, vertexShader: THREE.ShaderLib.standard.vertexShader, fragmentShader: THREE.ShaderLib.standard.fragmentShader } as unknown as THREE.WebGLProgramParametersWithUniforms;
+      mat.onBeforeCompile(sh, undefined as unknown as THREE.WebGLRenderer);
+      return sh.uniforms.uSceneryBaseY.value as number;
+    };
+    check('each at its own foot height', footOf(matA) === 20 && footOf(matB) === 90, `${footOf(matA)}, ${footOf(matB)}`);
+    check('textured seats are left as they are', seatRow.material === seats);
+    resetSceneryInstances();
+  }
+
+  console.log(`\nAll ${passed} scenery checks passed.`);
+})().catch((err) => {
+  console.error('FAIL', err);
+  process.exit(1);
+});

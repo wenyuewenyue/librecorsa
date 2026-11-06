@@ -32,11 +32,11 @@ export const AidLamp: React.FC<{ label: string; active: boolean }> = ({ label, a
 export const F12026ChannelsPanel: React.FC<{ channels: F12026Channels }> = ({ channels: c }) => {
   const sr = [c.WHEEL_SR_LF, c.WHEEL_SR_RF, c.WHEEL_SR_LR, c.WHEEL_SR_RR];
   const bump = [c.BUMPSTOPUP_TRAVEL_LF, c.BUMPSTOPUP_TRAVEL_RF, c.BUMPSTOPUP_TRAVEL_LR, c.BUMPSTOPUP_TRAVEL_RR];
-  const drsState = c.CHANGED_DRS_OPEN ? "OPEN" : c.drsAvailable ? "ARMED" : c.drsZone ? "ZONE" : "OFF";
+  const drsState = c.CHANGED_DRS_OPEN ? "开启" : c.drsAvailable ? "待命" : c.drsZone ? "区域内" : "关闭";
   const drsColor = c.CHANGED_DRS_OPEN ? HUD_CYAN : c.drsAvailable ? HUD_VOLT : "rgba(255,255,255,0.22)";
 
   return (
-    <section aria-label="Engineering channels" className={`w-[320px] rounded-[22px] px-3.5 py-3 ${HUD_GLASS}`} data-testid="f12026-channels">
+    <section aria-label="工程通道" className={`w-[320px] rounded-[22px] px-3.5 py-3 ${HUD_GLASS}`} data-testid="f12026-channels">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <span
@@ -44,7 +44,7 @@ export const F12026ChannelsPanel: React.FC<{ channels: F12026Channels }> = ({ ch
             style={{ backgroundColor: c.carId === "amg-gt3" ? HUD_CYAN : HUD_VOLT }}
           />
           <span className="lc-data text-[11px] tracking-[0.12em] text-[#F5F7FA]">
-            {c.carId === "amg-gt3" ? "AMG GT3 · CHANNELS" : "FA-26 · CHANNELS"}
+            {c.carId === "amg-gt3" ? "AMG GT3 · 通道" : "FA-26 · 通道"}
           </span>
         </div>
         <span className="lc-data rounded-full bg-[#1B1F2B] px-2 py-0.5 text-[9px] uppercase text-[#CCFF00]">
@@ -88,18 +88,18 @@ export const F12026ChannelsPanel: React.FC<{ channels: F12026Channels }> = ({ ch
 
       <div className="mt-2 grid grid-cols-3 gap-1.5">
         <div className={`flex flex-col rounded-[12px] px-2 py-1.5 ${HUD_WELL}`} title="AERO_HEIGHT">
-          <span className={`${HUD_LBL} !text-[8px]`}>AERO HGT</span>
+          <span className={`${HUD_LBL} !text-[8px]`}>空力高度</span>
           <span className="lc-data mt-0.5 text-[12px] text-[#F5F7FA]">{(c.AERO_HEIGHT * 1000).toFixed(0)} mm</span>
         </div>
         <div
           className={`flex flex-col rounded-[12px] px-2 py-1.5 ${HUD_WELL}`}
-          title="AERO_BALANCE (front share of downforce)"
+          title="AERO_BALANCE（前部下压力占比）"
         >
-          <span className={`${HUD_LBL} !text-[8px]`}>AERO BAL</span>
+          <span className={`${HUD_LBL} !text-[8px]`}>空力平衡</span>
           <span className="lc-data mt-0.5 text-[12px] text-[#00E5FF]">{c.AERO_BALANCE.toFixed(1)}%</span>
         </div>
         <div className={`flex flex-col rounded-[12px] px-2 py-1.5 ${HUD_WELL}`} title="LSD_LOCKING_TORQUE">
-          <span className={`${HUD_LBL} !text-[8px]`}>LSD LOCK</span>
+          <span className={`${HUD_LBL} !text-[8px]`}>LSD 锁止</span>
           <span className="lc-data mt-0.5 text-[12px] text-[#F5F7FA]">{Math.round(c.LSD_LOCKING_TORQUE)} Nm</span>
         </div>
       </div>
@@ -122,8 +122,8 @@ export const F12026ChannelsPanel: React.FC<{ channels: F12026Channels }> = ({ ch
             </span>
             <span className={`${HUD_LBL} truncate`}>
               {c.drsDetection
-                ? `${c.drsDetection.zone} ${c.drsDetection.eligible ? "EARNED" : "LOCKED"}`
-                : "NO DETECTION"}
+                ? `${c.drsDetection.zone} ${c.drsDetection.eligible ? "已获得" : "锁定"}`
+                : "无检测点"}
             </span>
           </>
         ) : (
@@ -134,7 +134,7 @@ export const F12026ChannelsPanel: React.FC<{ channels: F12026Channels }> = ({ ch
         )}
         {c.wallContact ? (
           <span className="lc-data rounded-full px-2 py-0.5 text-[10px] text-[#F5F7FA]" style={{ backgroundColor: HUD_RED }}>
-            WALL
+            撞墙
           </span>
         ) : null}
       </div>

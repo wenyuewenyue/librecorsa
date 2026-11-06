@@ -64,22 +64,21 @@ export default function ErrorBoundary({
               <span className="lc-ping absolute inset-0 rounded-full bg-[#FF2A3C]" />
               <span className="relative h-2 w-2 rounded-full bg-[#FF2A3C]" />
             </span>
-            Red flag
+            红旗
           </span>
           <h1 className="lc-disp m-0 text-[clamp(56px,8vw,112px)] short:text-[48px]">
-            The simulator
+            模拟器
             <br />
-            stopped
+            已停止
           </h1>
           <p className="m-0 max-w-[560px] text-[16px] leading-[1.55] text-[#C5CBD8] sm:text-[18px]">
-            WebGL or the physics failed to start. Updating your browser or graphics driver, or enabling hardware
-            acceleration, usually fixes it.
+            WebGL 或物理引擎未能启动。更新浏览器或显卡驱动，或开启硬件加速，通常可以解决。
           </p>
         </div>
 
         <div className="max-w-[600px] overflow-hidden rounded-[18px] border border-[#262B3D] bg-[#11131A]/90">
           <div className="flex items-center justify-between border-b border-[#262B3D] px-4 py-2.5">
-            <span className="lc-lbl !text-[10px]">Error detail</span>
+            <span className="lc-lbl !text-[10px]">错误详情</span>
             <span aria-hidden className="h-2 w-2 rounded-full bg-[#FF2A3C]" />
           </div>
           <pre className="m-0 px-4 py-3.5 font-f1-mono text-[12px] leading-[1.6] break-words whitespace-pre-wrap text-[#8E96AA]">
@@ -96,7 +95,7 @@ export default function ErrorBoundary({
               </span>
             }
           >
-            Restart simulator
+            重启模拟器
           </PrimaryButton>
         </div>
       </main>

@@ -31,19 +31,19 @@ export const FfbMeter: React.FC<FfbMeterProps> = ({
   const fillColor = clipping ? HUD_RED : HUD_CYAN;
 
   return (
-    <section aria-label="Force feedback" className={`w-[256px] rounded-[22px] px-3.5 py-3 ${HUD_GLASS}`}>
+    <section aria-label="力反馈" className={`w-[256px] rounded-[22px] px-3.5 py-3 ${HUD_GLASS}`}>
       {/* Header: label and clipping lamp */}
       <div className="mb-2 flex items-center justify-between">
         <span className="lc-data inline-flex items-center gap-2 text-[11px] tracking-[0.12em] text-[#F5F7FA]">
           <span className="h-[7px] w-[7px] rounded-full bg-[#00E5FF]" />
-          FFB · RIM
+          FFB · 方向盘
         </span>
         <span
           className={`lc-data rounded-full px-2 py-0.5 text-[9px] tracking-[0.1em] transition-colors ${
             clipping ? "bg-[#FF2A3C] text-[#F5F7FA]" : "border border-[#262B3D] text-[#8E96AA]"
           }`}
         >
-          CLIPPING
+          削波
         </span>
       </div>
 
@@ -62,12 +62,12 @@ export const FfbMeter: React.FC<FfbMeterProps> = ({
             <span
               className="absolute inset-y-0 w-px bg-white/80"
               style={{ left: `${50 - peakPct}%` }}
-              title="Peak (left)"
+              title="峰值（左）"
             />
             <span
               className="absolute inset-y-0 w-px bg-white/80"
               style={{ left: `${50 + peakPct}%` }}
-              title="Peak (right)"
+              title="峰值（右）"
             />
           </>
         ) : null}
@@ -81,7 +81,7 @@ export const FfbMeter: React.FC<FfbMeterProps> = ({
           {Math.round(Math.abs(f) * 100)}%
         </span>
         <span className={HUD_LBL}>
-          Peak <span className="lc-data text-[11px] tracking-normal text-[#C5CBD8]">{Math.round(peakMag * 100)}%</span>
+          峰值 <span className="lc-data text-[11px] tracking-normal text-[#C5CBD8]">{Math.round(peakMag * 100)}%</span>
         </span>
       </div>
 
@@ -94,7 +94,7 @@ export const FfbMeter: React.FC<FfbMeterProps> = ({
             disabled={!onApplySuggestedGain}
             className="lc-data cursor-pointer rounded-full bg-[#CCFF00] px-3 py-1 text-[10px] uppercase text-[#08090D] transition-colors hover:bg-[#E2FF4D] disabled:cursor-not-allowed disabled:opacity-40"
           >
-            Set gain to {suggestedGain.toFixed(2)}
+            增益设为 {suggestedGain.toFixed(2)}
           </button>
         </div>
       ) : null}
