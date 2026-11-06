@@ -37,6 +37,7 @@
 
 import * as THREE from 'three';
 import { Lut } from '../lut';
+import { tyreGaugePressureAtTemperature } from '../tyre-pressure';
 import {
   advanceDirtyLevel,
   evaluateIso8608RoadRoughness,
@@ -84,6 +85,8 @@ import {
   wetWearScale,
 } from '../wet-tyres';
 import { FULL_REALISM, realismThermalGrip, type SimRealismFlags } from '../sim-realism';
+import { NO_BUFF, type BuffPack } from '../buff-pack';
+import { surfaceDragN } from '../track-surfaces';
 import {
   type AeroRideHeightMap,
   type AxleSuspensionData,
@@ -98,6 +101,7 @@ import {
   type SuspensionSettingUnits,
   suspensionSupportsHeave,
   type TyresCompoundData,
+  type TyresPressureData,
   type WingData,
   type ZoneData_DRSZone,
 } from './F12026CarConfig';
@@ -125,6 +129,16 @@ const AUTO_BRAKE_DOWNSHIFT_PEDAL = 0.3;
 const AUTO_BRAKE_DOWNSHIFT_GAP_S = 0.25;
 /** Probe start above the suspension hardpoint (m) */
 const GROUND_PROBE_UP_M = 0.6;
+/** Placement: the ground under each tyre is looked for at most this far above the ground under the CG (m) */
+const ROAD_ATTITUDE_PROBE_UP_M = 1.5;
+/** Placement: steepest grade or camber the car is seated on (rad, ≈34°: Daytona's 31° turn banking) */
+const ROAD_ATTITUDE_MAX_RAD = 0.6;
+/**
+ * Past these the integration has blown up rather than the car crashed: 200 m/s is 720 km/h, and 40 rad/s is over six
+ * turns a second (a barrel roll or a spin at speed stays under ≈15 rad/s)
+ */
+const BLOWN_UP_SPEED_MS = 200;
+const BLOWN_UP_SPIN_RADS = 40;
 /** Least climb per step over an abrupt rise (m), so a car at rest still settles onto a raised surface */
 const STEP_CLIMB_MIN_M = 0.0005;
 /** Droop limiter stiffness / damping (N/m, Ns/m) */
@@ -313,7 +327,9 @@ export interface WheelState {
   dirtyLevel: number;
   /** Physical 2-node brake disc thermal & pad state */
   brakeDisc: BrakeDiscState;
+  /** Setup inflation pressure at the compound's coldRefC blanket temperature (psi gauge) */
   coldPressurePsi: number;
+  /** Current inflation pressure (psi gauge) */
   pressurePsi: number;
   brakeTorqueNm: number;
   driveTorqueNm: number;
@@ -354,6 +370,7 @@ export interface VehicleTelemetry {
   camberDeg: [number, number, number, number];
   tyreSurfaceTempC: [number, number, number, number];
   tyreCoreTempC: [number, number, number, number];
+  /** Current inflation pressures (psi gauge), LF / RF / LR / RR */
   tyrePressurePsi: [number, number, number, number];
   /** Floor heights (m): mean, front axle, rear axle */
   AERO_HEIGHT: number;
@@ -402,6 +419,9 @@ interface WingRuntime {
   aoaCd: Lut;
   ghCl: Lut;
   ghCd: Lut;
+  /** Body yaw (|deg|) → CL / CD multipliers; null = insensitive */
+  yawCl: Lut | null;
+  yawCd: Lut | null;
 }
 
 export interface TyreRuntime {
@@ -532,6 +552,25 @@ export function createTyreRuntime(compound: TyresCompoundData, rear = false): Ty
   };
 }
 
+/**
+ * Peak friction coefficient of a tyre at vertical load `fz` (N), lateral (`y`) or longitudinal (`x`): the compound's
+ * tabulated load-sensitivity curve, else the power law about Fz0. Before temperature, pressure, camber, wear and
+ * water scale it (the per-wheel force in `VehiclePhysics` multiplies those in).
+ */
+export function tyrePeakMu(t: Pick<TyreRuntime, 'data' | 'fz0' | 'dyCurve' | 'dxCurve'>, fz: number, axis: 'x' | 'y'): number {
+  const curve = axis === 'y' ? t.dyCurve : t.dxCurve;
+  if (curve) return curve.evaluate(fz);
+  const m = t.data.modelData;
+  const loadRef = Math.max(0.05, fz / t.fz0);
+  return axis === 'y' ? m.Dy0 * Math.pow(loadRef, m.lsExpY - 1) : m.Dx0 * Math.pow(loadRef, m.lsExpX - 1);
+}
+
+/** Grip at hot inflation pressure `psi` (gauge): a parabola about the optimum, floored at half grip */
+export function tyrePressureGrip(p: Pick<TyresPressureData, 'optimalPsi' | 'pressureGripSensitivity'>, psi: number): number {
+  const dp = (psi - p.optimalPsi) / p.optimalPsi;
+  return Math.max(0.5, 1 - p.pressureGripSensitivity * dp * dp);
+}
+
 /** Pure-slip force shape at normalised slip s ≥ 0 (1 at the peak, s = 1) */
 export function tyreSlipCurve(t: Pick<TyreRuntime, 'B' | 'C' | 'useFalloff' | 'falloffLevel' | 'falloffSlope'>, s: number): number {
   if (t.useFalloff && s > 1) {
@@ -608,6 +647,8 @@ export class VehiclePhysics {
   public readonly wheelbaseM: number;
   /** Road-wheel angle at full lock (rad); the garage's steering ratio changes it */
   public maxSteerRad: number;
+  /** Activation-code buff multipliers (all 1 when no buff is active) */
+  public buff: BuffPack = NO_BUFF;
   /** Garage: static toe per axle (rad, + = toe-in), engine braking and brake duct cooling relative to the baseline */
   public staticToeRad = { front: 0, rear: 0 };
   public engineBrakingScale = 1;
@@ -740,6 +781,8 @@ export class VehiclePhysics {
   private aeroFrontN = 0;
   private aeroDownN = 0;
   private aeroDragN = 0;
+  /** Air slip angle the wing-element aero last saw (|deg|) */
+  public aeroYawDeg = 0;
   private rideFront = 0;
   private rideRear = 0;
   /** Lagged map-aero forces (N): front and rear downforce, drag */
@@ -799,6 +842,8 @@ export class VehiclePhysics {
       aoaCd: new Lut(spec.lutAOA_CD),
       ghCl: new Lut(spec.lutGH_CL_mult),
       ghCd: new Lut(spec.lutGH_CD_mult),
+      yawCl: spec.lutYaw_CL_mult ? new Lut(spec.lutYaw_CL_mult) : null,
+      yawCd: spec.lutYaw_CD_mult ? new Lut(spec.lutYaw_CD_mult) : null,
     }));
 
     const modes = cfg.performanceModes;
@@ -962,7 +1007,7 @@ export class VehiclePhysics {
     this.walls = walls;
   }
 
-  /** Optimum hot pressure (psi) and working tread window (°C) of the front (0) or rear (1) tyres */
+  /** Optimum hot pressure (psi gauge) and working tread window (°C) of the front (0) or rear (1) tyres */
   public tyreOptimum(axle: 0 | 1): { psi: number; tempC: [number, number] } {
     const d = this.tyres[axle].data;
     return { psi: d.pressureData.optimalPsi, tempC: d.thermalData.optimalTempC };
@@ -1060,8 +1105,12 @@ export class VehiclePhysics {
     const hit = createGroundHit();
     const groundY = this.ground.query(x, z, probeY, hit) ? hit.height : 0;
     const pitch = Math.asin(this.staticPitchSin());
-    this.quaternion.setFromEuler(new THREE.Euler(pitch, yawRad, 0, 'YXZ'));
+    // Seated on the road's grade and camber, not level: level on a 10 % hill, one axle starts deep in its bump rubber
+    // and the other past its droop stop, and that spring torque pitches the car over before it is released
+    const road = this.roadAttitude(x, z, yawRad, groundY, hit);
+    this.quaternion.setFromEuler(new THREE.Euler(pitch - road.gradeRad, yawRad, road.bankRad, 'YXZ'));
     this.position.set(x, groundY + ch.cgHeight + this.rideHeightOffsetM, z);
+    this.clearDynamicState();
     this.velocity.set(0, 0, 0);
     this.angularVelocity.set(0, 0, 0);
     this.prevVelocity.set(0, 0, 0);
@@ -1084,7 +1133,8 @@ export class VehiclePhysics {
     this.mapAeroRearN = 0;
     this.mapAeroDragN = 0;
     this.wallPrevCg.copy(this.position);
-    if (!keepTyres) this.setTyreBlanketState();
+    // Tyres kept through a flashback are only worth keeping while their state is a number
+    if (!keepTyres || !this.tyreStateFinite()) this.setTyreBlanketState();
 
     // Hubs at their static height over the local ground
     this.updateBasis();
@@ -1121,7 +1171,9 @@ export class VehiclePhysics {
       this.updateBasis();
       this.velocity.x = speedMs * _ez.x;
       this.velocity.z = speedMs * _ez.z;
-      for (const w of this.wheels) w.omega = speedMs / Math.max(0.2, w.rollingRadius || 0.35);
+      // Free-rolling at the road speed under each tyre: held at speed / r, the tyres would drive (or brake) the
+      // pinned car through the whole settle, and on a grade that thrust pitches it up
+      for (const w of this.wheels) w.omega = (k === 0 ? speedMs : Math.max(0, w.vx)) / Math.max(0.2, w.rollingRadius || 0.35);
       if (rolling) this.engineOmega = 0.5 * (this.wheels[2].omega + this.wheels[3].omega) * this.totalRatio();
       this.substep(h, hold);
       this.position.x = x;
@@ -1143,7 +1195,9 @@ export class VehiclePhysics {
       const slope = (0.5 * (W[0].contactY + W[1].contactY) - 0.5 * (W[2].contactY + W[3].contactY)) / this.wheelbaseM;
       const n = Math.hypot(1, slope);
       this.velocity.set((speedMs * hx) / hl / n, (speedMs * slope) / n, (speedMs * hz) / hl / n);
+      this.angularVelocity.set(0, 0, 0);
       for (const w of this.wheels) {
+        w.omega = speedMs / Math.max(0.2, w.rollingRadius || 0.35);
         w.slipRatio = 0;
         w.tanSlipAngle = 0;
       }
@@ -1151,6 +1205,124 @@ export class VehiclePhysics {
     this.prevVelocity.copy(this.velocity);
     this.ffbSubframeSamples.length = 0;
     this.updateOutputs(0);
+  }
+
+  /**
+   * Grade along the heading (rad, + = uphill) and camber across it (rad, + = left side higher) of the ground under
+   * the four tyres of a car placed at (x, z) heading `yawRad`, for seating it on the road. A corner with no ground
+   * under it reads as `groundY`; a cliff edge or a wall face under one corner is clamped to a believable road.
+   */
+  private roadAttitude(x: number, z: number, yawRad: number, groundY: number, hit: GroundHit): { gradeRad: number; bankRad: number } {
+    const fx = Math.sin(yawRad);
+    const fz = Math.cos(yawRad);
+    const a = this.cgToFrontM;
+    const b = this.cgToRearM;
+    const tf = 0.5 * this.config.chassis.trackWidthFront;
+    const tr = 0.5 * this.config.chassis.trackWidthRear;
+    // Body +left = up × forward = (fz, 0, −fx)
+    const at = (along: number, left: number) => {
+      const px = x + fx * along + fz * left;
+      const pz = z + fz * along - fx * left;
+      return this.ground.query(px, pz, groundY + ROAD_ATTITUDE_PROBE_UP_M, hit) ? hit.height : groundY;
+    };
+    const fl = at(a, tf);
+    const fr = at(a, -tf);
+    const rl = at(-b, tr);
+    const rr = at(-b, -tr);
+    const gradeRad = Math.atan2(0.5 * (fl + fr) - 0.5 * (rl + rr), a + b);
+    const bankRad = Math.atan2(0.5 * (fl + rl) - 0.5 * (fr + rr), tf + tr);
+    const lim = ROAD_ATTITUDE_MAX_RAD;
+    return { gradeRad: THREE.MathUtils.clamp(gradeRad, -lim, lim), bankRad: THREE.MathUtils.clamp(bankRad, -lim, lim) };
+  }
+
+  /**
+   * Zero what the last run left in the body, wheels and drivetrain that `reset` does not set itself. After the state
+   * blew up (a non-finite number anywhere), any of these would carry the NaN straight into the settle and the car
+   * could never be put back on the track.
+   */
+  private clearDynamicState(): void {
+    for (const w of this.wheels) {
+      w.compression = 0;
+      w.compressionVel = 0;
+      w.suspensionForce = 0;
+      w.deflection = 0;
+      w.loadedRadius = 0;
+      w.rollingRadius = 0;
+      w.fz = 0;
+      w.fx = 0;
+      w.fy = 0;
+      w.mz = 0;
+      w.mx = 0;
+      w.vx = 0;
+      w.vy = 0;
+      w.slipVelX = 0;
+      w.slipAngleRad = 0;
+      w.combinedSlip = 0;
+      w.circleFraction = 0;
+      w.camberLeftRad = 0;
+      w.steerRad = 0;
+      w.toeRad = 0;
+      w.muX = 0;
+      w.muY = 0;
+      w.brakeTorqueNm = 0;
+      w.driveTorqueNm = 0;
+      if (!Number.isFinite(w.rotationRad)) w.rotationRad = 0;
+      if (!w.bandLoadShares.every(Number.isFinite)) w.bandLoadShares = [1 / 3, 1 / 3, 1 / 3];
+    }
+    this.clutchEngagement = 1;
+    this.lsdLockTorque = 0;
+    this.mgukTorque = 0;
+    this.aeroFrontN = 0;
+    this.aeroDownN = 0;
+    this.aeroDragN = 0;
+    this.rideFront = 0;
+    this.rideRear = 0;
+    this.turboTargetBar = 1;
+    this.ffbSum = 0;
+    this.ffbSamples = 0;
+    this.telemetry.ffbTorqueNorm = 0;
+    if (!Number.isFinite(this.ersEnergyJ)) this.ersEnergyJ = this.config.ers.ERS_MAX_CHARGE;
+  }
+
+  /** Tyre temperatures, wear and pressures, and the brake discs, are all finite */
+  private tyreStateFinite(): boolean {
+    const fin = Number.isFinite;
+    return this.wheels.every(
+      (w) =>
+        fin(w.surfaceTempC) &&
+        fin(w.coreTempC) &&
+        w.bandTempsC.every(fin) &&
+        w.bandCarcassTempsC.every(fin) &&
+        w.bandCoreTempsC.every(fin) &&
+        w.circumferentialTempsC.every(fin) &&
+        w.circumferentialWear.every(fin) &&
+        fin(w.wear) &&
+        fin(w.flatSpotSeverity) &&
+        fin(w.grainLevel) &&
+        fin(w.blisterLevel) &&
+        fin(w.dirtyLevel) &&
+        fin(w.pressurePsi) &&
+        fin(w.brakeDisc.surfaceTempC) &&
+        fin(w.brakeDisc.coreTempC) &&
+        fin(w.brakeDisc.muFactor)
+    );
+  }
+
+  /**
+   * The rigid body, wheels and engine hold numbers a car can have: all finite, under BLOWN_UP_SPEED_MS and spinning
+   * slower than BLOWN_UP_SPIN_RADS. False once the integration has blown up; the owner puts the car back with `reset`.
+   */
+  public stateIsSane(): boolean {
+    const p = this.position;
+    const v = this.velocity;
+    const w = this.angularVelocity;
+    const q = this.quaternion;
+    if (!Number.isFinite(p.x + p.y + p.z + v.x + v.y + v.z + w.x + w.y + w.z + q.x + q.y + q.z + q.w + this.engineOmega)) return false;
+    if (v.lengthSq() > BLOWN_UP_SPEED_MS * BLOWN_UP_SPEED_MS || w.lengthSq() > BLOWN_UP_SPIN_RADS * BLOWN_UP_SPIN_RADS) return false;
+    for (const wh of this.wheels) {
+      if (!Number.isFinite(wh.omega + wh.hubY + wh.hubVy + wh.slipRatio + wh.tanSlipAngle + wh.complianceRad)) return false;
+    }
+    return true;
   }
 
   /** Advance by a render frame (any dt); runs fixed 500 Hz steps */
@@ -1185,7 +1357,7 @@ export class VehiclePhysics {
       const t = this.tyres[w.isFront ? 0 : 1].data;
       const p = t.pressureData;
       const targetCoreC = 0.5 * (t.thermalData.optimalTempC[0] + t.thermalData.optimalTempC[1]);
-      w.coldPressurePsi = Math.round(((p.optimalPsi * (p.coldRefC + 273.15)) / (targetCoreC + 273.15)) * 10) / 10;
+      w.coldPressurePsi = Math.round(tyreGaugePressureAtTemperature(p.optimalPsi, targetCoreC, p.coldRefC) * 10) / 10;
       w.surfaceTempC = p.coldRefC;
       w.coreTempC = p.coldRefC;
       w.bandTempsC = [p.coldRefC, p.coldRefC, p.coldRefC];
@@ -1628,7 +1800,6 @@ export class VehiclePhysics {
       if (fz > 0) {
         const td = tyre.data;
         const cam = td.camberData;
-        const loadRef = Math.max(0.05, fz / tyre.fz0);
         // Temperature grip per band (inner / middle / outer), weighted by each band's share of the contact pressure
         const sh = w.bandLoadShares;
         const thermal = realismThermalGrip(
@@ -1637,8 +1808,7 @@ export class VehiclePhysics {
             sh[2] * tyre.thermal.evaluate(w.bandTempsC[2]),
           this.realism
         );
-        const dp = (w.pressurePsi - td.pressureData.optimalPsi) / td.pressureData.optimalPsi;
-        const pressureGrip = Math.max(0.5, 1 - td.pressureData.pressureGripSensitivity * dp * dp);
+        const pressureGrip = tyrePressureGrip(td.pressureData, w.pressurePsi);
         w.thermalGrip = thermal;
         // Wear, graining, blistering, dirt and flat-spots, as the VF26's tyre model (ac-tyre computeTyreForces)
         const degradation =
@@ -1664,7 +1834,8 @@ export class VehiclePhysics {
           degradation *
           g.grip *
           this.trackEvolution.gripMultiplier *
-          wet;
+          wet *
+          this.buff.grip;
 
         // Camber grip: leaning into the force direction (force opposes the slip)
         const forceSign = w.tanSlipAngle > 0 ? -1 : 1;
@@ -1674,8 +1845,8 @@ export class VehiclePhysics {
         const camberGripX = THREE.MathUtils.clamp(1 + cam.dcamber0_x * gAbs + cam.dcamber1_x * gAbs * gAbs, 0.7, 1.1);
         // Peak μ at this load: the compound's load tables, else the power law about Fz0. BRAKE_DX_MOD adds
         // longitudinal grip while the tyre is braking
-        const dY = tyre.dyCurve ? tyre.dyCurve.evaluate(fz) : model.Dy0 * Math.pow(loadRef, model.lsExpY - 1);
-        const dX = tyre.dxCurve ? tyre.dxCurve.evaluate(fz) : model.Dx0 * Math.pow(loadRef, model.lsExpX - 1);
+        const dY = tyrePeakMu(tyre, fz, 'y');
+        const dX = tyrePeakMu(tyre, fz, 'x');
         const brakeMod = w.slipRatio < 0 ? 1 + tyre.brakeDxMod : 1;
         const muY = dY * base * camberGrip;
         const muX = dX * brakeMod * base * camberGripX;
@@ -1757,8 +1928,19 @@ export class VehiclePhysics {
           roadTexNm;
       }
 
+      // Loose ground (gravel, grass) ploughs against the contact patch's motion, sliding or rolling, outside the
+      // tyre's friction circle (and so outside the wheel spin, the rack and the tyre telemetry)
+      let dragX = 0;
+      let dragY = 0;
+      const patchSpeed = Math.hypot(vx, vy);
+      const dragN = surfaceDragN(g.props?.rollingResistance ?? 0, fz, patchSpeed);
+      if (dragN > 0) {
+        dragX = (-dragN * vx) / patchSpeed;
+        dragY = (-dragN * vy) / patchSpeed;
+      }
+
       // Tyre forces reach the body at the dynamic 3D roll centre; the normal's horizontal part holds it on slopes
-      _f.copy(_fw).multiplyScalar(fx).addScaledVector(_lw, fy);
+      _f.copy(_fw).multiplyScalar(fx + dragX).addScaledVector(_lw, fy + dragY);
       _f.x += fz * g.nx;
       _f.z += fz * g.nz;
       const kinRcHeight = w.isFront ? frontKin.rollCentreHeightM : rearKin.rollCentreHeightM;
@@ -1951,6 +2133,9 @@ export class VehiclePhysics {
     let tIce =
       (plate * this.luts.power.evaluate(rpm) * engineMapTorqueScale * 1000) / omegaE -
       (1 - plate) * this.luts.coast.evaluate(rpm) * mode.coastTorqueScale * this.engineBrakingScale;
+    // Activation-code low-speed acceleration: at full throttle the coast term is zero, so
+    // scaling the whole positive torque is the exact drive-torque multiplier there.
+    if (tIce > 0 && this.velocity.length() < this.buff.lowSpeedMs) tIce *= this.buff.lowSpeedAccel;
     if (this.shiftTimer > 0 && tIce > 0) tIce *= gb.shiftTorqueFraction;
     // Turbo lag: while the boost still trails the demand (≈0.14 s spool), up to TURBO_LAG_TORQUE_LOSS of the torque
     // is missing. Kept small: the torque curve is the steady-state, full-boost one
@@ -2034,7 +2219,7 @@ export class VehiclePhysics {
     const rearDriveBrake = inp.brake > 0.05 && br.brakeByWire !== false ? (crankBrake * engage * Math.abs(ratio) * gb.efficiency) / 2 : 0;
     for (let i = 0; i < 4; i++) {
       const w = W[i];
-      const demand = inp.brake * (inp.brakeWheelScale ? inp.brakeWheelScale[i] : 1) * br.maxTorqueNm * (w.isFront ? bias : 1 - bias);
+      const demand = inp.brake * (inp.brakeWheelScale ? inp.brakeWheelScale[i] : 1) * br.maxTorqueNm * (w.isFront ? bias : 1 - bias) * this.buff.brake;
       // Pad μ(T) of the disc (1 in its window, a mild loss cold or faded)
       const friction = (w.isFront ? demand : Math.max(0, demand - rearDriveBrake)) * w.brakeDisc.muFactor;
       const tyre = this.tyres[w.isFront ? 0 : 1].data.modelData;
@@ -2149,7 +2334,7 @@ export class VehiclePhysics {
     }
   }
 
-  /** Front wing, venturi floor and rear wing on the current ride heights, with wake & roll sensitivity */
+  /** Front wing, venturi floor and rear wing on the current ride heights, with wake and body-yaw sensitivity */
   private applyAero(): void {
     const aero = this.config.aero;
     const W = this.wheels;
@@ -2174,6 +2359,9 @@ export class VehiclePhysics {
     const air = _air.copy(this.velocity).sub(this.windWorld);
     const vF = air.dot(_ez);
     const q = 0.5 * this.airDensity * vF * vF;
+    // Air slip angle in the body frame, as the map-aero path reads it
+    const yawDeg = Math.abs(vF) > 1 ? Math.abs(Math.atan2(air.dot(_ex), Math.abs(vF))) * RAD2DEG : 0;
+    this.aeroYawDeg = yawDeg;
     let down = 0;
     let front = 0;
     let drag = aero.drag * wake.dragMultiplier;
@@ -2184,6 +2372,8 @@ export class VehiclePhysics {
       const aoa = s.name === 'VENTURI_FLOOR' ? rakeDeg : s.angleDeg + pitchDelta;
       let cl = wing.aoaCl.evaluate(aoa) * wing.ghCl.evaluate(h);
       let cd = wing.aoaCd.evaluate(aoa) * wing.ghCd.evaluate(h);
+      if (wing.yawCl) cl *= wing.yawCl.evaluate(yawDeg);
+      if (wing.yawCd) cd *= wing.yawCd.evaluate(yawDeg);
       if (s.drs) {
         cl *= 1 + (s.drs.clMult - 1) * this.drsBlend;
         cd *= 1 + (s.drs.cdMult - 1) * this.drsBlend;
@@ -2194,7 +2384,7 @@ export class VehiclePhysics {
           : s.name === 'REAR_WING'
             ? wake.rearDownforceMultiplier
             : 0.5 * (wake.frontDownforceMultiplier + wake.rearDownforceMultiplier);
-      const fd = q * cl * s.area * wakeClMult;
+      const fd = q * cl * s.area * wakeClMult * this.buff.downforce;
       drag += cd * s.area * wake.dragMultiplier;
       down += fd;
       front += fd * ((s.positionZ + b) / L);
@@ -2207,7 +2397,7 @@ export class VehiclePhysics {
       [aero.front_lift, a],
       [aero.rear_lift, -b],
     ] as const) {
-      const fd = q * cl;
+      const fd = q * cl * this.buff.downforce;
       down += fd;
       if (z > 0) front += fd;
       _f.copy(_ey).multiplyScalar(-fd);
@@ -2273,8 +2463,8 @@ export class VehiclePhysics {
       rear += fd * (1 - share);
       cdA += wing.aoaCd.evaluate(aoa) * s.area;
     }
-    front *= wake.frontDownforceMultiplier;
-    rear *= wake.rearDownforceMultiplier;
+    front *= wake.frontDownforceMultiplier * this.buff.downforce;
+    rear *= wake.rearDownforceMultiplier * this.buff.downforce;
     const speed = air.length();
     const drag = 0.5 * this.airDensity * speed * speed * cdA * wake.dragMultiplier;
     const lag = (tau: number) => (tau > 0 ? Math.min(1, h / tau) : 1);
@@ -2420,7 +2610,7 @@ export class VehiclePhysics {
       const p = td.pressureData;
       const rimWetDeltaC = rimWetEnvironmentCoolingWK(this.wetness, v) * 0.45 * Math.max(0, w.coreTempC - this.ambientC) * 0.02;
       const effectiveGasTempC = Math.max(this.ambientC - 5, w.coreTempC - rimWetDeltaC);
-      w.pressurePsi = (w.coldPressurePsi * (effectiveGasTempC + 273.15)) / (p.coldRefC + 273.15);
+      w.pressurePsi = tyreGaugePressureAtTemperature(w.coldPressurePsi, p.coldRefC, effectiveGasTempC);
 
       // 2-node physical brake disc thermal step
       const frictionTorqueNm = this.lastInputs.brake > 0.01 ? Math.abs(w.brakeTorqueNm) : 0;

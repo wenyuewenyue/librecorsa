@@ -14,6 +14,7 @@ import {
 import {
   DEFAULT_WHEEL_SETTINGS,
   PAD_SENSITIVITY,
+  STEER_LOCK_MIN_DEG,
   type AxisBinding,
   type ButtonBinding,
   type InputDevice,
@@ -25,6 +26,17 @@ import { AI_SKILL_DEFAULT } from "@/lib/sim/ai-tuning";
 import { SIM_REALISM_LEVELS, type SimRealism } from "@/lib/sim/sim-realism";
 import { DEFAULT_SESSION_CONDITIONS, sanitizeConditions, type SessionConditions } from "@/lib/sim/weather";
 
+export interface GraphicsTestResult {
+  avgFps: number;
+  p1Fps: number;
+  stutterRatio: number;
+  quality: GraphicsQuality;
+  renderScale: number;
+  deviceIsMobile: boolean;
+  source: "auto" | "manual";
+  testedAt: number;
+}
+
 export interface PlayerSettings {
   device: InputDevice;
   keys: KeyBindings;
@@ -34,6 +46,8 @@ export interface PlayerSettings {
   assistPreset: AssistPreset;
   racingLine: boolean;
   gamepadAssist: boolean;
+  /** Automatic gearbox; off = shift with Gear up / Gear down */
+  autoGearbox: boolean;
   mouseSteer: boolean;
   liveryId: string | null;
   camera: CameraMode | null;
@@ -47,6 +61,10 @@ export interface PlayerSettings {
   keyboardTuning: KeyboardTuning;
   hud: HudSettings;
   graphics: GraphicsSettings;
+  /** Last automatic graphics test, if any. Stored in this same settings object (bugesera.settings.v1). */
+  graphicsTest: GraphicsTestResult | null;
+  /** True once the first-run test prompt was skipped, so it is not shown on every entry. */
+  graphicsTestDismissed: boolean;
   touch: TouchSettings;
   /** Name, three-letter code and colour other players see */
   profile: DriverProfile;
@@ -122,8 +140,11 @@ export interface HudSettings {
   drsBeep: boolean;
   /** Short beep 150 rpm before the rev limiter */
   shiftBeep: boolean;
-  /** Onboard camera turns gently into the car's direction of travel (feel the rear slide) */
-  neckFx: boolean;
+  /**
+   * Driver's-eye camera: "natural" holds the head against the chassis' suspension pitch and roll, the way a neck
+   * does, and turns it a little toward the corner; "static" bolts it to the car with no head motion or shake.
+   */
+  headMovement: "natural" | "static";
 }
 
 export type VirtualMirrorMode = "auto" | "always" | "off";
@@ -187,10 +208,11 @@ export const DEFAULT_HUD_SETTINGS: HudSettings = {
   mapMode: "full",
   radar: true,
   splitGaps: true,
-  mfdAutoCollapse: true,
+  // Off: a wheel button that opens the MFD would otherwise see it vanish 3.5 s later, which reads as a glitch
+  mfdAutoCollapse: false,
   drsBeep: true,
   shiftBeep: false,
-  neckFx: true,
+  headMovement: "natural",
 };
 
 export const DEFAULT_GRAPHICS_SETTINGS: GraphicsSettings = { quality: "high", renderScale: 1 };
@@ -248,6 +270,7 @@ export const DEFAULT_PLAYER_SETTINGS: PlayerSettings = {
   assistPreset: "semi_pro",
   racingLine: true,
   gamepadAssist: true,
+  autoGearbox: true,
   mouseSteer: false,
   liveryId: null,
   camera: null,
@@ -256,6 +279,8 @@ export const DEFAULT_PLAYER_SETTINGS: PlayerSettings = {
   keyboardTuning: DEFAULT_KEYBOARD_TUNING,
   hud: DEFAULT_HUD_SETTINGS,
   graphics: DEFAULT_GRAPHICS_SETTINGS,
+  graphicsTest: null,
+  graphicsTestDismissed: false,
   touch: DEFAULT_TOUCH_SETTINGS,
   profile: DEFAULT_DRIVER_PROFILE,
   ghost: true,
@@ -336,11 +361,21 @@ function parseWheel(v: unknown): WheelSettings {
     ffbDamping: num(v.ffbDamping, 0, 1, d.ffbDamping),
     ffbFilterS: num(v.ffbFilterS, 0, 0.05, d.ffbFilterS),
     ffbPerCar: parsePerCarFfb(v.ffbPerCar),
+    steerLockPerCar: parsePerCarLock(v.steerLockPerCar),
     hidFfb: bool(v.hidFfb, d.hidFfb),
     telemetryOut: bool(v.telemetryOut, d.telemetryOut),
     telemetryPort: Math.round(num(v.telemetryPort, 1024, 65535, d.telemetryPort)),
     buttons,
   };
+}
+
+function parsePerCarLock(v: unknown): WheelSettings["steerLockPerCar"] {
+  const out: WheelSettings["steerLockPerCar"] = {};
+  if (!isObj(v)) return out;
+  for (const [car, lock] of Object.entries(v).slice(0, 16)) {
+    if (isNum(lock)) out[car.slice(0, 32)] = Math.round(num(lock, STEER_LOCK_MIN_DEG, 2520, STEER_LOCK_MIN_DEG));
+  }
+  return out;
 }
 
 function parsePerCarFfb(v: unknown): WheelSettings["ffbPerCar"] {
@@ -399,7 +434,8 @@ function parseHud(v: unknown): HudSettings {
     mfdAutoCollapse: bool(v.mfdAutoCollapse, d.mfdAutoCollapse),
     drsBeep: bool(v.drsBeep, d.drsBeep),
     shiftBeep: bool(v.shiftBeep, d.shiftBeep),
-    neckFx: bool(v.neckFx, d.neckFx),
+    // Older saves: Neck FX switched off asked for a still camera
+    headMovement: oneOf(v.headMovement, ["natural", "static"] as const, v.neckFx === false ? "static" : d.headMovement),
   };
 }
 
@@ -409,6 +445,23 @@ function parseGraphics(v: unknown): GraphicsSettings {
   return {
     quality: oneOf(v.quality, ["low", "medium", "high"] as const, d.quality),
     renderScale: num(v.renderScale, 0.5, 1.5, d.renderScale),
+  };
+}
+
+function parseGraphicsTest(v: unknown): GraphicsTestResult | null {
+  if (!isObj(v)) return null;
+  if (typeof v.avgFps !== "number" || typeof v.p1Fps !== "number" || typeof v.stutterRatio !== "number") return null;
+  if (!["low", "medium", "high"].includes(String(v.quality))) return null;
+  if (typeof v.renderScale !== "number" || typeof v.testedAt !== "number") return null;
+  return {
+    avgFps: v.avgFps,
+    p1Fps: v.p1Fps,
+    stutterRatio: v.stutterRatio,
+    quality: v.quality as GraphicsQuality,
+    renderScale: num(v.renderScale, 0.5, 1.5, 1),
+    deviceIsMobile: bool(v.deviceIsMobile, false),
+    source: v.source === "manual" ? "manual" : "auto",
+    testedAt: v.testedAt,
   };
 }
 
@@ -445,6 +498,7 @@ export function parsePlayerSettings(raw: unknown): PlayerSettings {
     assistPreset: oneOf(raw.assistPreset, ["pro", "semi_pro", "assisted"] as const, d.assistPreset),
     racingLine: bool(raw.racingLine, d.racingLine),
     gamepadAssist: bool(raw.gamepadAssist, d.gamepadAssist),
+    autoGearbox: bool(raw.autoGearbox, d.autoGearbox),
     mouseSteer: bool(raw.mouseSteer, d.mouseSteer),
     liveryId: isStr(raw.liveryId) ? raw.liveryId : null,
     camera: CAMERA_MODES.includes(raw.camera as CameraMode) ? (raw.camera as CameraMode) : null,
@@ -463,6 +517,8 @@ export function parsePlayerSettings(raw: unknown): PlayerSettings {
     keyboardTuning: parseKeyboardTuning(raw.keyboardTuning),
     hud: parseHud(raw.hud),
     graphics: parseGraphics(raw.graphics),
+    graphicsTest: parseGraphicsTest(raw.graphicsTest),
+    graphicsTestDismissed: bool(raw.graphicsTestDismissed, false),
     touch: parseTouch(raw.touch),
     profile: parseProfile(raw.profile),
     ghost: bool(raw.ghost, d.ghost),

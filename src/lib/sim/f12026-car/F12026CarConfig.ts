@@ -338,6 +338,12 @@ export interface WingData {
   lutGH_CD_mult: LutPoints;
   /** DRS multipliers on this element (only the rear wing has a flap) */
   drs?: { clMult: number; cdMult: number };
+  /**
+   * Body yaw (air slip angle, |deg|) → CL / CD multipliers on this element: a wing working in the body's wake loses
+   * load when the car slides. Absent = no yaw sensitivity (the map-aero cars carry theirs in `rhMap.yawCl`).
+   */
+  lutYaw_CL_mult?: LutPoints;
+  lutYaw_CD_mult?: LutPoints;
 }
 
 /** `ZoneData_DRSZone` (fractions of a lap) */
@@ -513,9 +519,9 @@ export interface TyresThermalPatchData {
 
 /** `TyresPressureData` */
 export interface TyresPressureData {
-  /** Hot inflation pressure for peak grip (psi) */
+  /** Hot inflation pressure for peak grip (psi gauge) */
   optimalPsi: number;
-  /** Inflation pressure (psi) → radial stiffness (N/m) */
+  /** Inflation pressure (psi gauge) → radial stiffness (N/m) */
   pressureSpringCurve: LutPoints;
   /** Grip loss per (ΔP / P_opt)² */
   pressureGripSensitivity: number;

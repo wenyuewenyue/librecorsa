@@ -31,8 +31,11 @@ import type {
   RacingLineId,
   SurfaceType,
   TireCompound,
+  TrackSamplePoint,
   TyreSetup,
+  WheelPressures,
 } from '@/types/f1';
+import { axlePressures, pressureAt } from '@/types/f1';
 import {
   BASE_ALTITUDE_M,
   type BuiltTrackData,
@@ -45,6 +48,7 @@ import type { AeroWakeState } from '../aero-wake';
 import type { TrackEvolutionSample } from '../track-evolution';
 import type { WeatherContactSample } from '../weather';
 import { SLICK_TRAITS, wetGripFactor } from '../wet-tyres';
+import { tyreGaugePressureAtTemperature } from '../tyre-pressure';
 import { FULL_REALISM, type SimRealismFlags } from '../sim-realism';
 import { flyingExitSpeedMs, flyingStartPoint, type SimulatorCar, type SimulatorWheel, type TyreVisualState } from '../simulator-car';
 import { aiLineOffsetM, type BrakingGuide, brakingGuideFor, sampleProfile, type SpeedProfileCarModel } from '../speed-profile';
@@ -58,6 +62,7 @@ import {
   type TyresCompoundData,
 } from './F12026CarConfig';
 import {
+  createGroundHit,
   type GroundHit,
   type GroundQuery,
   TrackColliderQuery,
@@ -65,6 +70,7 @@ import {
   TrackWallQuery,
 } from './TrackColliderQuery';
 import { type VehicleEvent, type VehicleInputs, VehiclePhysics } from './VehiclePhysics';
+import { NO_BUFF, type BuffPack } from '../buff-pack';
 import { KERB_PROFILE_L } from '../track-surfaces';
 
 const G = 9.81;
@@ -91,7 +97,21 @@ export interface CarElectronicsProfile {
   tcDefault: number;
   tcRateHz: number;
   tcMinSpeedKmh: number;
+  /**
+   * TC1 slip target tightening with lateral g: target × max(`floor`, 1 − `gain`·(|a_y|/g)^`exponent` − rear-slide
+   * term in the wet). Default (an F1 calibration): gain 0.14, exponent 1.3, floor 0.42.
+   */
+  tcLateralTightening?: { gain: number; exponent: number; floor: number };
+  /**
+   * ABS rear channels: the lock target × max(`floor`, 1 − `gain`·(|slip angle| − `deadbandRad`)), so a trail-braked rear
+   * that already slides is held off the brakes. Default (an F1 calibration): gain 1.4, dead band 0.03 rad, floor 0.72.
+   * Gain 0 = the rears regulate slip ratio only.
+   */
+  absRearSlipAngleGuard?: { gain: number; deadbandRad: number; floor: number };
 }
+
+const DEFAULT_TC_LATERAL_TIGHTENING = { gain: 0.14, exponent: 1.3, floor: 0.42 } as const;
+const DEFAULT_ABS_REAR_GUARD = { gain: 1.4, deadbandRad: 0.03, floor: 0.72 } as const;
 
 export const F12026_ELECTRONICS: CarElectronicsProfile = {
   absLevels: [0.08, 0.09, 0.1, 0.11, 0.12, 0.13, 0.14, 0.15, 0.16, 0.17, 0.18, 0.19],
@@ -137,6 +157,11 @@ export interface CarSimProfile {
   speedProfile?: SpeedProfileCarModel;
   /** The racing line this car drives, plans on and draws (default: the F1 line) */
   racingLine?: RacingLineId;
+  /**
+   * The car's understeer gradient (front road-wheel angle beyond the kinematic one, rad per m/s² of lateral
+   * acceleration) the autopilot steers in ahead of its yaw loop. Default 0: the loop's integrator finds it.
+   */
+  understeerRadPerMs2?: number;
 }
 
 export const F12026_SIM_PROFILE: CarSimProfile = {
@@ -168,6 +193,97 @@ function autopilotEdgeMarginM(profile: CarSimProfile): number {
   return 0.5 * Math.max(ch.trackWidthFront, ch.trackWidthRear) + 0.4;
 }
 
+/** Height step (m) over one 0.1 m probe across the road that ends the asphalt the autopilot uses: a lip no tyre should meet */
+const AP_EDGE_STEP_M = 0.08;
+/** Probe spacing across the road (m) */
+const AP_EDGE_PROBE_M = 0.1;
+/** Clear ground the autopilot keeps between its usable road and a raised step out past it (m) */
+const AP_EDGE_APRON_M = 0.6;
+/** Road either side of the centreline the autopilot may use (m, every `AP_PROFILE_STEP_M`): - and + lateral sides */
+interface AutopilotEdges {
+  neg: Float32Array;
+  pos: Float32Array;
+}
+const apEdges = new WeakMap<GroundQuery, WeakMap<BuiltTrackData, AutopilotEdges>>();
+
+/**
+ * Where the road under the track's colliders really ends each side: probed out from the centreline to
+ * `AP_EDGE_APRON_M` past the track's width, the first rise of more than `AP_EDGE_STEP_M` beyond what the banking
+ * gives (a collider that does not meet the road surface, e.g. a 0.2–0.45 m lip along Suzuka's edges that launches a
+ * car onto it) leaves the road `AP_EDGE_APRON_M` short of it, never more than 1 m inside the track's own width. A drop
+ * (onto lower runoff) is no hazard. Each narrowing holds for ±10 m, since the car comes at a lip at an angle.
+ */
+function autopilotEdges(track: BuiltTrackData, ground: GroundQuery): AutopilotEdges {
+  let perTrack = apEdges.get(ground);
+  if (!perTrack) apEdges.set(ground, (perTrack = new WeakMap()));
+  const cached = perTrack.get(track);
+  if (cached) return cached;
+  const L = track.totalLengthM;
+  const n = Math.ceil(L / AP_PROFILE_STEP_M);
+  const raw = { neg: new Float32Array(n), pos: new Float32Array(n) };
+  const hit = createGroundHit();
+  for (let i = 0; i < n; i++) {
+    const smp = track.getSampleAtDistance((i * L) / n);
+    const half = smp.width / 2;
+    const b = smp.binormal;
+    for (const side of [-1, 1] as const) {
+      const at = (lat: number) =>
+        ground.query(smp.position.x + b.x * lat, smp.position.z + b.z * lat, smp.position.y + b.y * lat + 1.5, hit) ? hit.height : null;
+      let usable = half;
+      let prev = at(0);
+      for (let lat = AP_EDGE_PROBE_M; prev !== null && lat <= half + AP_EDGE_APRON_M + 1e-6; lat += AP_EDGE_PROBE_M) {
+        const h = at(side * lat);
+        if (h === null ? lat <= half : h - prev - b.y * side * AP_EDGE_PROBE_M > AP_EDGE_STEP_M) {
+          usable = Math.min(half, lat - AP_EDGE_PROBE_M - (h === null ? 0 : AP_EDGE_APRON_M));
+          break;
+        }
+        if (h === null) break;
+        prev = h;
+      }
+      // how far inside the track's width the road ends
+      (side < 0 ? raw.neg : raw.pos)[i] = Math.min(1, half - usable);
+    }
+  }
+  const hold = Math.round(10 / (L / n));
+  const out = { neg: new Float32Array(n), pos: new Float32Array(n) };
+  for (let i = 0; i < n; i++) {
+    let neg = 0;
+    let pos = 0;
+    for (let k = -hold; k <= hold; k++) {
+      const j = (i + k + n) % n;
+      neg = Math.max(neg, raw.neg[j]);
+      pos = Math.max(pos, raw.pos[j]);
+    }
+    const half = track.getSampleAtDistance((i * L) / n).width / 2;
+    out.neg[i] = half - neg;
+    out.pos[i] = half - pos;
+  }
+  perTrack.set(track, out);
+  return out;
+}
+
+/** The lateral range (m) the autopilot keeps its CG in at distance `s`: the usable road less its edge margin */
+function autopilotLateralRange(
+  track: BuiltTrackData,
+  sample: TrackSamplePoint,
+  s: number,
+  edges: AutopilotEdges | null,
+  profile: CarSimProfile
+): [number, number] {
+  const margin = autopilotEdgeMarginM(profile);
+  let neg = sample.width / 2;
+  let pos = neg;
+  if (edges) {
+    const n = edges.neg.length;
+    const i = Math.round((wrap(s, track.totalLengthM) / track.totalLengthM) * n) % n;
+    neg = Math.min(neg, edges.neg[i]);
+    pos = Math.min(pos, edges.pos[i]);
+  }
+  const lo = -(neg - margin);
+  const hi = pos - margin;
+  return lo <= hi ? [lo, hi] : [0.5 * (lo + hi), 0.5 * (lo + hi)];
+}
+
 /** Deceleration the autopilot plans with at a speed (m/s): 85 % of what the car pulls on the brakes */
 function autopilotDecel(b: BrakingEnvelope, speedMs: number): number {
   return 0.85 * 9.81 * (b.lowG + b.aeroG * Math.min(1, (speedMs / b.refMs) ** 2));
@@ -177,6 +293,8 @@ function autopilotDecel(b: BrakingEnvelope, speedMs: number): number {
 const AP_PROFILE_STEP_M = 5;
 /** Lateral grip the autopilot plans corners with, as a fraction of its braking envelope */
 const AP_LATERAL_SHARE = 1.1;
+/** Banking the autopilot's plan ignores (rad, 4°): see `autopilotProfile` */
+const AP_BANK_DEADBAND_RAD = (4 * Math.PI) / 180;
 const apProfiles = new WeakMap<BuiltTrackData, Map<string, Float32Array>>();
 
 /**
@@ -185,10 +303,11 @@ const apProfiles = new WeakMap<BuiltTrackData, Map<string, Float32Array>>();
  * friction circle, so no braking is planned that the tyres need for turning. The circuit's profile is the VF26's,
  * which corners and brakes harder than this car.
  */
-function autopilotProfile(track: BuiltTrackData, profile: CarSimProfile): Float32Array {
+function autopilotProfile(track: BuiltTrackData, profile: CarSimProfile, edges: AutopilotEdges | null): Float32Array {
   let perCar = apProfiles.get(track);
   if (!perCar) apProfiles.set(track, (perCar = new Map()));
-  const cached = perCar.get(profile.id);
+  const key = edges ? `${profile.id}:colliders` : profile.id;
+  const cached = perCar.get(key);
   if (cached) return cached;
   const b = profile.braking;
   const L = track.totalLengthM;
@@ -196,45 +315,86 @@ function autopilotProfile(track: BuiltTrackData, profile: CarSimProfile): Float3
   const ds = L / n;
   const px = new Float64Array(n);
   const pz = new Float64Array(n);
+  const bank = new Float64Array(n);
+  const offs = new Float64Array(n);
   for (let i = 0; i < n; i++) {
     const smp = track.getSampleAtDistance(i * ds);
-    const edge = smp.width / 2 - autopilotEdgeMarginM(profile);
-    const off = THREE.MathUtils.clamp(aiLineOffsetM(smp, profile.racingLine), -edge, edge);
+    bank[i] = smp.bankingRad;
+    const [lo, hi] = autopilotLateralRange(track, smp, i * ds, edges, profile);
+    offs[i] = THREE.MathUtils.clamp(aiLineOffsetM(smp, profile.racingLine), lo, hi);
+  }
+  // The clamp kinks the path where the line meets it, and a kink read over ±10 m is a corner twice as tight as the
+  // line (82 instead of ~120 km/h planned through Shanghai's turn 13): the path the car drives through it is the
+  // clamped line smoothed over ±10 m
+  for (let i = 0; i < n; i++) {
+    const smp = track.getSampleAtDistance(i * ds);
+    const off = (offs[(i - 2 + n) % n] + 2 * offs[(i - 1 + n) % n] + 3 * offs[i] + 2 * offs[(i + 1) % n] + offs[(i + 2) % n]) / 9;
     px[i] = smp.position.x + smp.binormal.x * off;
     pz[i] = smp.position.z + smp.binormal.z * off;
   }
-  // Path curvature over ±10 m (circumcircle of three points), the larger of two neighbouring spans
+  // Path curvature over ±10 m (circumcircle of three points), averaged with its neighbours below; its sign (+ right)
+  // says which way the banking leans relative to the turn
   const k = new Float64Array(n);
+  const turnSign = new Float64Array(n);
   const span = Math.max(1, Math.round(10 / ds));
   for (let i = 0; i < n; i++) {
     const a = (i - span + n) % n;
     const c = (i + span) % n;
     const abx = px[i] - px[a], abz = pz[i] - pz[a], bcx = px[c] - px[i], bcz = pz[c] - pz[i];
     const acx = px[c] - px[a], acz = pz[c] - pz[a];
-    const cross = Math.abs(abx * bcz - abz * bcx);
-    k[i] = (2 * cross) / Math.max(1e-6, Math.hypot(abx, abz) * Math.hypot(bcx, bcz) * Math.hypot(acx, acz));
+    const cross = abx * bcz - abz * bcx;
+    turnSign[i] = Math.sign(cross) || 1;
+    k[i] = (2 * Math.abs(cross)) / Math.max(1e-6, Math.hypot(abx, abz) * Math.hypot(bcx, bcz) * Math.hypot(acx, acz));
+  }
+  // Banking into the turn (θ) as the circuit's speed profile has it: the tyres' share of the load is g cos θ and
+  // gravity carries g sin θ of the turn (Daytona's 31° turns are flat out; planned as flat corners they were not).
+  // The first AP_BANK_DEADBAND_RAD of it is left out: a road course's few degrees of camber, read off a scan, are
+  // drainage fall and noise, and the full-pace plan was tuned without them (Rwanda's lap then ran 0.2 m wide).
+  const gN = new Float64Array(n);
+  const gT = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const raw = bank[i] * turnSign[i];
+    const into = Math.sign(raw) * Math.max(0, Math.abs(raw) - AP_BANK_DEADBAND_RAD);
+    gN[i] = Math.cos(into);
+    gT[i] = 9.81 * Math.sin(into);
   }
   const v = new Float32Array(n);
-  // v²κ = share × decel(v), with decel(v) = c (low + aero (v / ref)²) up to ref and c (low + aero) above
+  // v²κ = share × decel(v) + g sin θ, with decel(v) = c (low cos θ + aero (v / ref)²) up to ref and
+  // c (low cos θ + aero) above
   const c = AP_LATERAL_SHARE * 0.85 * 9.81;
   for (let i = 0; i < n; i++) {
-    const kk = Math.max(k[i], k[(i + 1) % n], k[(i - 1 + n) % n], 1e-5);
+    const kk = Math.max(1e-5, (k[(i - 1 + n) % n] + 2 * k[i] + k[(i + 1) % n]) / 4);
     const den = kk - (c * b.aeroG) / (b.refMs * b.refMs);
-    const vLow = den > 0 ? Math.sqrt((c * b.lowG) / den) : Infinity;
-    v[i] = Math.min(110, vLow < b.refMs ? vLow : Math.sqrt((c * (b.lowG + b.aeroG)) / kk));
+    const vLow = den > 0 ? Math.sqrt(Math.max(0, c * b.lowG * gN[i] + gT[i]) / den) : Infinity;
+    v[i] = Math.min(110, vLow < b.refMs ? vLow : Math.sqrt(Math.max(0, c * (b.lowG * gN[i] + b.aeroG) + gT[i]) / kk));
   }
   // Backward braking pass (twice round the lap so the wrap is consistent)
   for (let pass = 0; pass < 2 * n; pass++) {
     const i = (n - 1 - (pass % n) + n) % n;
     const j = (i + 1) % n;
     const vj = v[j];
-    const aLat = vj * vj * k[j];
+    const aLat = Math.max(0, vj * vj * k[j] - gT[j]);
     const aDec = autopilotDecel(b, vj);
     const aLong = Math.sqrt(Math.max(0.15 * aDec * aDec, aDec * aDec - (aLat / AP_LATERAL_SHARE) ** 2));
     v[i] = Math.min(v[i], Math.sqrt(vj * vj + 2 * aLong * ds));
   }
-  perCar.set(profile.id, v);
+  perCar.set(key, v);
   return v;
+}
+
+/** TC / ABS / TC2 dial positions */
+interface AidDials {
+  tcLevel: number;
+  tc2Level: number;
+  absLevel: number;
+}
+
+/** The dial positions of a driver-assist preset */
+function assistPresetDials(profileId: string, preset: DriverAssistPreset): AidDials {
+  const isGt3 = profileId === 'amg-gt3';
+  if (preset === 'pro') return { tcLevel: 0, tc2Level: isGt3 ? 5 : 6, absLevel: 0 };
+  if (preset === 'semi_pro') return { tcLevel: isGt3 ? 10 : 5, tc2Level: 6, absLevel: isGt3 ? 9 : 5 };
+  return { tcLevel: isGt3 ? 12 : 8, tc2Level: 9, absLevel: isGt3 ? 11 : 9 };
 }
 
 /** Driver aids and the autopilot run on frame slices no longer than this (s) */
@@ -242,6 +402,15 @@ const AID_SLICE_S = 1 / 240;
 const BOOST_S = 8;
 const BOOST_COOLDOWN_S = 4;
 const AMBIENT_C = 27;
+/** Autopilot line holding: lateral acceleration (m/s²) per m off its line and per m/s drifting off it, and its cap */
+const AP_LINE_KP = 2.25;
+const AP_LINE_KD = 2.1;
+const AP_LINE_MAX_MS2 = 3;
+/** Autopilot pedals ease off past this share of the rears' peak slip angle, by this much per share beyond it */
+const AP_REAR_GUARD = 0.9;
+const AP_REAR_GUARD_GAIN = 4;
+/** Autopilot pedal per m/s of speed error, on top of its integral */
+const AP_PEDAL_P = 0.5;
 /** Autopilot: stopped this long (s) → rejoin on the racing line, as the AI cars do */
 const AUTOPILOT_STUCK_S = 4;
 /** This far below the track's surface the car has fallen through the world */
@@ -325,6 +494,11 @@ export class TrackSampleGroundQuery implements GroundQuery {
   }
 }
 
+/** The drivable-surface query of a loaded track root (shared with the cars), or null when it has no colliders */
+export function trackGroundQuery(root: THREE.Object3D): TrackColliderQuery | null {
+  return collidersFor(root)?.ground ?? null;
+}
+
 /** Colliders built once per loaded track root and shared by every f12026-car */
 const colliderCache = new WeakMap<THREE.Object3D, { ground: TrackColliderQuery; walls: TrackWallQuery } | null>();
 
@@ -354,6 +528,8 @@ const _v = new THREE.Vector3();
 
 export class F12026CarSim implements SimulatorCar {
   public readonly vehicle: VehiclePhysics;
+  /** Activation-code buff multipliers (all 1 when no buff is active); forwarded to the vehicle physics */
+  public buff: BuffPack = NO_BUFF;
   public readonly config: CarPhysicsConfig;
   public readonly telemetry: CarTelemetry;
   public readonly worldPosition = new THREE.Vector3();
@@ -418,6 +594,8 @@ export class F12026CarSim implements SimulatorCar {
   /** User-selected ERS deployment mode in MFD (overridden to 'PSH' while manual override / boost is held) */
   private userErsMode: PerformanceModeName = 'RAC';
   public gamepadAssistEnabled = true;
+  /** Automatic gear changes; off = the driver shifts. The autopilot always shifts for itself (VehiclePhysics.autoShift) */
+  public autoGearbox = true;
   public readonly gamepadAssist = new GamepadSteeringAssist();
   /** DRS is driver-operated on the f12026-car (and absent on a GT3) */
   public autoXMode = false;
@@ -473,7 +651,7 @@ export class F12026CarSim implements SimulatorCar {
   /** AI cars fit the tyre the weather calls for (set on cars made by `createAiPeerCar`) */
   public aiAutoTyres = false;
   private realism: SimRealismFlags = { ...FULL_REALISM };
-  private coldPsi = { front: 0, rear: 0 };
+  private coldPsi: WheelPressures = axlePressures(0, 0);
   private onColliders = false;
   private progressHintS: number | undefined;
   private poseHintS: number | undefined;
@@ -503,9 +681,8 @@ export class F12026CarSim implements SimulatorCar {
   private readonly prevWheelOmega: [number, number, number, number] = [0, 0, 0, 0];
   private padSteerActive = false;
   private steerCmd = 0;
+  /** Autopilot pedal (−1 full brake … +1 full throttle): the integral of its speed error */
   private apPedal = 0;
-  private apTc = 1;
-  private apAbs = 1;
   private apThrottle = 0;
   /** Autopilot steer trim (rad) integrated from the yaw-rate shortfall, i.e. the car's understeer */
   private apYawI = 0;
@@ -575,7 +752,7 @@ export class F12026CarSim implements SimulatorCar {
     this.channels.carId = profile.id;
     this.channels.hasErs = profile.hasErs;
     this.channels.hasDrs = profile.hasDrs;
-    this.coldPsi = { front: v.wheels[0].coldPressurePsi, rear: v.wheels[2].coldPressurePsi };
+    this.coldPsi = axlePressures(v.wheels[0].coldPressurePsi, v.wheels[2].coldPressurePsi);
     if (root) this.attachTrackRoot(root);
     this.resetToStartGrid(false);
   }
@@ -585,9 +762,15 @@ export class F12026CarSim implements SimulatorCar {
   // ===========================================================================
 
   /** Instantiate an AI opponent car with the exact same vehicle profile and track colliders */
+  /** Where the road under this car's track colliders really ends (null on the sample ground) */
+  private autopilotEdges(): AutopilotEdges | null {
+    const c = this.onColliders && this.trackRoot ? collidersFor(this.trackRoot) : null;
+    return c ? autopilotEdges(this.track, c.ground) : null;
+  }
+
   /** The autopilot's own limit speed along the lap (m/s, every 5 m): what AI tuning scales */
   public aiBaseSpeedProfile(): Float32Array {
-    return autopilotProfile(this.track, this.profile);
+    return autopilotProfile(this.track, this.profile, this.autopilotEdges());
   }
 
   public createAiPeerCar(): F12026CarSim {
@@ -751,19 +934,20 @@ export class F12026CarSim implements SimulatorCar {
     const p = cd.pressureData;
     const th = cd.thermalData;
     const targetCoreC = 0.5 * (th.optimalTempC[0] + th.optimalTempC[1]);
-    return Math.round(((p.optimalPsi * (p.coldRefC + 273.15)) / (targetCoreC + 273.15)) * 10) / 10;
+    return Math.round(tyreGaugePressureAtTemperature(p.optimalPsi, targetCoreC, p.coldRefC) * 10) / 10;
   }
 
   set tireCompound(compound: TireCompound) {
     const prevDefault = this.defaultColdPsiForCompound();
-    const frontDelta = this.coldPsi.front - prevDefault;
-    const rearDelta = this.coldPsi.rear - prevDefault;
+    const deltas = { ...this.coldPsi };
+    for (const k of ["fl", "fr", "rl", "rr"] as const) deltas[k] -= prevDefault;
     this.compound = compound;
     this.vehicle.setCompound(this.config.compoundSlots[compound]);
     const nextDefault = this.defaultColdPsiForCompound();
     const pr = this.profile;
-    this.coldPsi.front = Math.round(THREE.MathUtils.clamp(nextDefault + frontDelta, pr.coldPsiRange[0], pr.coldPsiRange[1]) * 10) / 10;
-    this.coldPsi.rear = Math.round(THREE.MathUtils.clamp(nextDefault + rearDelta, pr.coldPsiRange[0], pr.coldPsiRange[1]) * 10) / 10;
+    for (const k of ["fl", "fr", "rl", "rr"] as const) {
+      this.coldPsi[k] = Math.round(THREE.MathUtils.clamp(nextDefault + deltas[k], pr.coldPsiRange[0], pr.coldPsiRange[1]) * 10) / 10;
+    }
     this.applyColdPressures();
   }
 
@@ -777,20 +961,7 @@ export class F12026CarSim implements SimulatorCar {
   }
 
   private applyAssistPresetLevels(preset: DriverAssistPreset): void {
-    const isGt3 = this.profile.id === 'amg-gt3';
-    if (preset === 'pro') {
-      this.tcLevel = 0;
-      this.tc2Level = isGt3 ? 5 : 6;
-      this.absLevel = 0;
-    } else if (preset === 'semi_pro') {
-      this.tcLevel = isGt3 ? 10 : 5;
-      this.tc2Level = 6;
-      this.absLevel = isGt3 ? 9 : 5;
-    } else {
-      this.tcLevel = isGt3 ? 12 : 8;
-      this.tc2Level = 9;
-      this.absLevel = isGt3 ? 11 : 9;
-    }
+    Object.assign(this, assistPresetDials(this.profile.id, preset));
   }
 
   public getLiveTunerState(): LiveTunerState {
@@ -882,12 +1053,13 @@ export class F12026CarSim implements SimulatorCar {
     };
   }
 
-  /** Within the profile's limits (f12026-car: as the VF26, 17–27 psi to 0.1, front camber −4.5…−1.5°, rear −3.0…−0.5°) */
+  /** Clamps cold pressure (psi gauge, rounded to 0.1) and camber (degrees) to the active vehicle profile's limits. */
   public setTyreSetup(setup: TyreSetup): void {
     const pick = (v: number, [lo, hi]: [number, number], current: number) => (Number.isFinite(v) ? THREE.MathUtils.clamp(v, lo, hi) : current);
     const pr = this.profile;
-    this.coldPsi.front = Math.round(pick(setup.coldPressurePsi.front, pr.coldPsiRange, this.coldPsi.front) * 10) / 10;
-    this.coldPsi.rear = Math.round(pick(setup.coldPressurePsi.rear, pr.coldPsiRange, this.coldPsi.rear) * 10) / 10;
+    for (const k of ["fl", "fr", "rl", "rr"] as const) {
+      this.coldPsi[k] = Math.round(pick(setup.coldPressurePsi[k], pr.coldPsiRange, this.coldPsi[k]) * 10) / 10;
+    }
     const s = this.config.suspensions;
     s.front.staticCamber = pick(setup.camberDeg.front, pr.frontCamberRange, s.front.staticCamber);
     s.rear.staticCamber = pick(setup.camberDeg.rear, pr.rearCamberRange, s.rear.staticCamber);
@@ -969,10 +1141,10 @@ export class F12026CarSim implements SimulatorCar {
       const start = flyingStartPoint(this.track);
       const s = wrap(start.s - gridSlot * 28, L);
       const smp = this.track.getSampleAtDistance(s);
-      const edge = Math.max(0, smp.width / 2 - autopilotEdgeMarginM(this.profile));
+      const [lo, hi] = autopilotLateralRange(this.track, smp, s, this.autopilotEdges(), this.profile);
       const stagger = gridSlot === 0 ? 0 : gridSlot % 2 === 1 ? -2.6 : 2.6;
-      const lateral = THREE.MathUtils.clamp(aiLineOffsetM(smp, this.line) + stagger, -edge, edge);
-      const prof = autopilotProfile(this.track, this.profile);
+      const lateral = THREE.MathUtils.clamp(aiLineOffsetM(smp, this.line) + stagger, Math.min(0, lo), Math.max(0, hi));
+      const prof = autopilotProfile(this.track, this.profile, this.autopilotEdges());
       const ownAt = (at: number) => prof[Math.floor(wrap(at, L) / (L / prof.length)) % prof.length];
       let speed = Math.min(75, 0.9 * Math.min(ownAt(s), (smp.brakeLimitKmh ?? smp.optimalSpeedKmh) / 3.6));
       if (start.cornerS !== null) {
@@ -1043,6 +1215,7 @@ export class F12026CarSim implements SimulatorCar {
   public step(dtSeconds: number, raw: Partial<ControlInputs>): CarTelemetry {
     if (!Number.isFinite(dtSeconds) || dtSeconds <= 0) return this.telemetry;
     const v = this.vehicle;
+    v.buff = this.buff;
     const inputs = {
       throttle: THREE.MathUtils.clamp(raw.throttle ?? 0, 0, 1),
       brake: THREE.MathUtils.clamp(raw.brake ?? 0, 0, 1),
@@ -1058,7 +1231,7 @@ export class F12026CarSim implements SimulatorCar {
     if (inputs.toggleXMode && this.profile.hasDrs) this.drsPressPending = true;
 
     // Push mode while the override is held / latched, or for the boost's 8 s
-    this.boostCooldownS = Math.max(0, this.boostCooldownS - dtSeconds);
+    this.boostCooldownS = Math.max(0, this.boostCooldownS - dtSeconds * this.buff.boostRecharge);
     if (this.boostRemainingS > 0) {
       this.boostRemainingS = Math.max(0, this.boostRemainingS - dtSeconds);
       if (this.boostRemainingS === 0) this.boostCooldownS = BOOST_COOLDOWN_S;
@@ -1069,6 +1242,7 @@ export class F12026CarSim implements SimulatorCar {
     const slices = Math.max(1, Math.ceil(dtSeconds / AID_SLICE_S - 1e-9));
     const h = dtSeconds / slices;
     let first = true;
+    this.vehicle.autoShift = this.autoGearbox || this.aiAutopilot;
     for (let k = 0; k < slices; k++) {
       const cmd: { throttle: number; brake: number; brakeWheelScale?: readonly [number, number, number, number]; steer: number; drs: boolean } =
         this.aiAutopilot ? this.autopilot(h) : this.driverCommand(inputs, h);
@@ -1154,32 +1328,43 @@ export class F12026CarSim implements SimulatorCar {
       steer = inputs.analogSteer !== undefined ? inputs.analogSteer : inputs.steerRight - inputs.steerLeft;
     }
 
+    return { ...this.electronicAids(inputs.throttle, inputs.brake, h, this), steer: THREE.MathUtils.clamp(steer, -1, 1), drs: false };
+  }
+
+  /** 130 Hz TC1/TC2 + 240 Hz 4-Ch ABS on the pedals, at the given dial positions (the driver's, or the autopilot's) */
+  private electronicAids(
+    throttleIn: number,
+    brake: number,
+    h: number,
+    dials: AidDials
+  ): { throttle: number; brake: number; brakeWheelScale: readonly [number, number, number, number] } {
     const v = this.vehicle;
     const W = v.wheels;
     const speed = v.speedMs;
     const elec = this.profile.electronics ?? F12026_ELECTRONICS;
 
     // 130 Hz 2-Stage Traction Control (TC1 slip target + Lateral-G compensation + TC2 spark/cylinder cut)
-    let throttle = inputs.throttle;
-    const tcLv = THREE.MathUtils.clamp(Math.round(this.tcLevel), 0, 12);
+    let throttle = throttleIn;
+    const tcLv = THREE.MathUtils.clamp(Math.round(dials.tcLevel), 0, 12);
     const tcBaseTarget = tcLv > 0 ? elec.tcLevels[THREE.MathUtils.clamp(12 - tcLv, 0, elec.tcLevels.length - 1)] : 0;
     const tcMinSpeedMs = elec.tcMinSpeedKmh / 3.6;
     if (tcBaseTarget > 0 && speed > Math.max(this.profile.tcMinSpeedMs, tcMinSpeedMs)) {
-      // Lateral-G slip target tightening: kappa_target(ay) = kappa_TC1 * max(0.45, 1.0 - 0.14 * (|ay|/g)^1.3)
+      // Lateral-G slip target tightening: kappa_target(ay) = kappa_TC1 * max(floor, 1.0 - gain * (|ay|/g)^exponent)
+      const tight = elec.tcLateralTightening ?? DEFAULT_TC_LATERAL_TIGHTENING;
       const gLat = Math.abs(this.lastAyMs2) / G;
       const saLimitRad = Math.max(0.05, (this.compoundData.modelData.friction_limit_angle || DEFAULT_FRICTION_LIMIT_ANGLE_DEG) * DEG2RAD);
       const saRearNorm =
         v.waterMm > 0
           ? Math.max(Math.abs(W[2].slipAngleRad), Math.abs(W[3].slipAngleRad)) / saLimitRad
           : 0;
-      const latFactor = Math.max(0.42, 1 - 0.14 * Math.pow(gLat, 1.3) - 0.22 * Math.max(0, saRearNorm - 0.45));
+      const latFactor = Math.max(tight.floor, 1 - tight.gain * Math.pow(gLat, tight.exponent) - 0.22 * Math.max(0, saRearNorm - 0.45));
       const tcEffTarget = tcBaseTarget * latFactor;
       // Weighted rear axle slip: 0.65 * max(k_LR, k_RR) + 0.35 * mean(k_LR, k_RR)
       const kL = Math.max(0, W[2].slipRatio);
       const kR = Math.max(0, W[3].slipRatio);
       const kRear = 0.65 * Math.max(kL, kR) + 0.35 * (0.5 * (kL + kR));
       const eTc = Math.max(0, kRear - tcEffTarget);
-      const tc2 = THREE.MathUtils.clamp(this.tc2Level, 1, 12);
+      const tc2 = THREE.MathUtils.clamp(dials.tc2Level, 1, 12);
       const tc2Norm = (tc2 - 1) / 11;
       // Stage A (0 < eTc <= 0.03): smooth spark timing retard up to 25% cut
       const stageACut = Math.min(1, eTc / 0.03) * 0.25 * (0.55 + 0.45 * tc2Norm);
@@ -1196,13 +1381,13 @@ export class F12026CarSim implements SimulatorCar {
     }
 
     // 240 Hz 4-Channel Independent ABS (per-wheel slip + angular decel anticipation + rear yaw stability)
-    const brake = inputs.brake;
-    const absLv = THREE.MathUtils.clamp(Math.round(this.absLevel), 0, 12);
+    const absLv = THREE.MathUtils.clamp(Math.round(dials.absLevel), 0, 12);
     const absBaseTarget = absLv > 0 ? elec.absLevels[THREE.MathUtils.clamp(12 - absLv, 0, elec.absLevels.length - 1)] : 0;
     const cut = this.absWheelCut;
     if (this.absCut === 1) cut.fill(1);
     if (absBaseTarget > 0 && speed > 3 && brake > 0.01) {
       const absRate = elec.absRateHz;
+      const guard = elec.absRearSlipAngleGuard ?? DEFAULT_ABS_REAR_GUARD;
       let minCut = 1;
       for (let i = 0; i < 4; i++) {
         const w = W[i];
@@ -1210,7 +1395,7 @@ export class F12026CarSim implements SimulatorCar {
         const decelAnticipation = ((wheelDecel * w.rollingRadius) / Math.max(8, speed)) * 0.016;
         const lock = -w.slipRatio + decelAnticipation;
         // Rear channels tighten target under trail-braking slip angle to prevent rear axle step-out
-        const rearLatGuard = i >= 2 ? Math.max(0.72, 1 - 1.4 * Math.max(0, Math.abs(w.slipAngleRad) - 0.03)) : 1;
+        const rearLatGuard = i >= 2 ? Math.max(guard.floor, 1 - guard.gain * Math.max(0, Math.abs(w.slipAngleRad) - guard.deadbandRad)) : 1;
         const effAbsTarget = absBaseTarget * rearLatGuard;
         const want = lock > effAbsTarget ? Math.max(0.08, 1 - (lock - effAbsTarget) * 12.5) : 1;
         cut[i] += (want - cut[i]) * Math.min(1, (want < cut[i] ? absRate * 0.65 : absRate * 0.16) * h);
@@ -1222,24 +1407,30 @@ export class F12026CarSim implements SimulatorCar {
       cut.fill(1);
     }
     for (let i = 0; i < 4; i++) this.prevWheelOmega[i] = W[i].omega;
-    return { throttle, brake, brakeWheelScale: cut, steer: THREE.MathUtils.clamp(steer, -1, 1), drs: false };
+    return { throttle, brake, brakeWheelScale: cut };
   }
 
   /**
    * Autopilot: pure pursuit on the racing line with countersteer on body slip, a target speed of
    * `aiPaceScale` × this car's limit speed just ahead (its own profile, never above the circuit's braking-limit
-   * speed), pedals feathered on wheelspin / lock-up.
+   * speed), the pedals through the car's own TC and 4-channel ABS at the semi-pro dials.
    * Opens DRS on full throttle when it is available.
    */
-  private autopilot(h: number): { throttle: number; brake: number; steer: number; drs: boolean } {
+  private autopilot(h: number): {
+    throttle: number;
+    brake: number;
+    brakeWheelScale: readonly [number, number, number, number];
+    steer: number;
+    drs: boolean;
+  } {
     const v = this.vehicle;
     const L = this.track.totalLengthM;
     const speed = v.speedMs;
     const p = this.track.projectWorldToTrack(v.position.x, v.position.z, this.poseHintS);
     const look = this.track.getSampleAtDistance((p.s + Math.max(10, (speed * 0.55) / this.aiSteerGain)) % L);
     // the racing line uses the kerbs; the autopilot keeps all four wheels on the asphalt
-    const edge = look.width / 2 - autopilotEdgeMarginM(this.profile);
-    const off = THREE.MathUtils.clamp(aiLineOffsetM(look, this.line) + this.aiLineBiasM, -edge, edge);
+    const [lookLo, lookHi] = autopilotLateralRange(this.track, look, look.s, this.autopilotEdges(), this.profile);
+    const off = THREE.MathUtils.clamp(aiLineOffsetM(look, this.line) + this.aiLineBiasM, lookLo, lookHi);
     _ex.set(1, 0, 0).applyQuaternion(v.quaternion);
     _ez.set(0, 0, 1).applyQuaternion(v.quaternion);
     const dx = look.position.x + look.binormal.x * off - v.position.x;
@@ -1249,14 +1440,40 @@ export class F12026CarSim implements SimulatorCar {
     const beta = Math.atan2(v.velocity.dot(_ex), Math.max(1, v.velocity.dot(_ez)));
     // Pure pursuit asks for a path curvature; yaw-rate PI makes the car actually turn at it, so its
     // understeer at speed does not carry it wide of the line
-    const kappa = (2 * Math.sin(alpha)) / Math.max(5, dl);
-    const yawErr = speed * kappa + this.bodyYawRate();
+    let kappa = (2 * Math.sin(alpha)) / Math.max(5, dl);
+    // ... plus a pull back onto the line here and now, on the error and its rate (the pursuit alone let the car run
+    // 2 m past its line and the edge on Daytona's banking exits and into Rwanda's turn 1), capped so a car well off
+    // the line rejoins it rather than asking the tyres for a second corner
+    {
+      const [lo, hi] = autopilotLateralRange(this.track, p.sample, p.s, this.autopilotEdges(), this.profile);
+      const lineNow = THREE.MathUtils.clamp(aiLineOffsetM(p.sample, this.line) + this.aiLineBiasM, lo, hi);
+      const b = p.sample.binormal;
+      const bl = Math.hypot(b.x, b.z) || 1;
+      // + lateral is this far to the car's left
+      const leftOf = (b.x * _ex.x + b.z * _ex.z) / bl;
+      const errLeft = (lineNow - p.lateralOffset) * leftOf;
+      const rateLeft = -((v.velocity.x * b.x + v.velocity.z * b.z) / bl) * leftOf;
+      const aLat = THREE.MathUtils.clamp(
+        (AP_LINE_KP * errLeft + AP_LINE_KD * rateLeft) * this.aiSteerGain,
+        -AP_LINE_MAX_MS2,
+        AP_LINE_MAX_MS2
+      );
+      kappa += aLat / Math.max(100, speed * speed);
+    }
+    // The path curvature is in the horizontal plane, so the yaw that follows it is about world up, not the body's
+    // (on Daytona's 31° banking the body's is cos 31° of it, and the integrator built up there sent the car off the
+    // banking wide)
+    const yawErr = speed * kappa - v.angularVelocity.y;
     const kYaw = v.wheelbaseM / Math.max(10, speed);
+    // past 65 m/s the yaw loop alone is too slow for the car's own response
+    const kYawP = 0.5 + 3 * THREE.MathUtils.clamp((speed - 65) / 30, 0, 1);
     // Never steer the fronts far past their peak slip angle: beyond it they only scrub and the car runs wide
     // (the integrator holds while the governor is on, so it cannot wind up)
     const peak = (this.compoundData.modelData.friction_limit_angle || DEFAULT_FRICTION_LIMIT_ANGLE_DEG) * DEG2RAD;
     const betaF = Math.atan2(v.velocity.dot(_ex) - this.bodyYawRate() * this.cgToFrontAxleM, Math.max(1, v.velocity.dot(_ez)));
-    const raw = Math.atan(v.wheelbaseM * kappa) + 0.8 * beta + 0.5 * kYaw * yawErr + this.apYawI;
+    // the car's understeer at the lateral acceleration asked for, steered in up front rather than left to the integrator
+    const understeer = (this.profile.understeerRadPerMs2 ?? 0) * speed * speed * kappa;
+    const raw = Math.atan(v.wheelbaseM * kappa) + understeer + 0.8 * beta + kYawP * kYaw * yawErr + this.apYawI;
     const delta = THREE.MathUtils.clamp(raw, betaF - 1.15 * peak, betaF + 1.15 * peak);
     const frontsSaturated = delta !== raw;
     if (!frontsSaturated) this.apYawI = THREE.MathUtils.clamp(this.apYawI + yawErr * kYaw * 2 * h, -0.05, 0.05);
@@ -1264,7 +1481,7 @@ export class F12026CarSim implements SimulatorCar {
     // each reachable by braking at the f12026-car's own deceleration. Aimed a little ahead of the car to cover the
     // pedal's lag.
     const lead = Math.max(5, speed * 0.2);
-    const prof = autopilotProfile(this.track, this.profile);
+    const prof = autopilotProfile(this.track, this.profile, this.autopilotEdges());
     const b = this.profile.braking;
     let vTarget = this.aiSpeedCapMs;
     for (let d = 0; d <= 300; d += 5) {
@@ -1279,36 +1496,48 @@ export class F12026CarSim implements SimulatorCar {
     // Off the line the corner is tighter than planned: give speed away for it
     const lineErr = Math.abs(aiLineOffsetM(p.sample, this.line) + this.aiLineBiasM - p.lateralOffset);
     vTarget *= 1 - 0.04 * Math.min(5, Math.max(0, lineErr - 1));
-    this.apPedal = THREE.MathUtils.clamp(this.apPedal + (vTarget - speed) * 0.01 * (h * 120), -1, 1);
+    // PI on speed: the integral alone lags a falling target, so the car braked on past each apex speed it was given
+    const vErr = vTarget - speed;
+    const pedalP = AP_PEDAL_P * vErr;
+    // the integral does not wind on into a pedal already pinned that way
+    if (!(Math.abs(this.apPedal + pedalP) >= 1 && Math.sign(vErr) === Math.sign(this.apPedal + pedalP))) {
+      this.apPedal = THREE.MathUtils.clamp(this.apPedal + vErr * 0.01 * (h * 120), -1, 1);
+    }
+    const pedal = THREE.MathUtils.clamp(this.apPedal + pedalP, -1, 1);
     const W = v.wheels;
-    const spin = Math.max(W[2].slipRatio, W[3].slipRatio);
-    const lock = Math.min(W[0].slipRatio, W[1].slipRatio, W[2].slipRatio, W[3].slipRatio);
-    this.apTc = THREE.MathUtils.clamp(this.apTc + (0.06 - spin) * (spin > 0.06 ? 1.5 : 0.3) * (h * 120), 0.1, 1);
-    this.apAbs = THREE.MathUtils.clamp(this.apAbs + (lock < -0.12 ? -0.2 : 0.05) * (h * 120), 0.05, 1);
+    // The rear stepping out (on a trail-braked entry, or on the power): ease both pedals as the rears' slip angle
+    // passes AP_REAR_GUARD of their peak, so they regain grip to hold the car with rather than spinning it
+    const rearSlip = Math.max(Math.abs(W[2].slipAngleRad), Math.abs(W[3].slipAngleRad)) / peak;
+    const rearCut = THREE.MathUtils.clamp(1 - AP_REAR_GUARD_GAIN * (rearSlip - AP_REAR_GUARD), 0.15, 1);
     // squeezed on rather than stabbed: at most full throttle in 0.4 s
-    const throttle = Math.min(Math.max(0, this.apPedal), this.apTc, this.apThrottle + 2.5 * h);
+    const throttle = Math.min(Math.max(0, pedal), this.apThrottle + 2.5 * h) * rearCut;
     this.apThrottle = throttle;
-    return {
+    // The car's own TC and per-wheel ABS: a lock-up of the unloaded inside front no longer takes the brakes off all
+    // four wheels (the car then ran into the corner 20-25 km/h hot), nor inside-rear wheelspin the whole throttle
+    const aids = this.electronicAids(
       throttle,
       // understeering on the brakes: ease off so the fronts have grip left to turn with
-      brake: Math.min(Math.max(0, -this.apPedal), this.apAbs) * (frontsSaturated ? 0.5 : 1),
+      Math.max(0, -pedal) * (frontsSaturated ? 0.5 : 1) * rearCut,
+      h,
+      assistPresetDials(this.profile.id, 'semi_pro')
+    );
+    return {
+      ...aids,
       // aimed at the road-wheel angle: the rack gives up `complianceRad` to the lateral force, so add it back
       steer: THREE.MathUtils.clamp(-(delta - 0.5 * (W[0].complianceRad + W[1].complianceRad)) / v.maxSteerRad, -1, 1),
-      drs: v.telemetry.drsAvailable && !v.drsOpen && throttle > 0.95,
+      drs: v.telemetry.drsAvailable && !v.drsOpen && aids.throttle > 0.95,
     };
   }
 
   /**
-   * The rigid body blew up (non-finite state) or the car fell through the world, e.g. launched over a barrier where
-   * there is no ground: put it back on the track, stopped, at the last good position. True if it did.
+   * The integration blew up (a non-finite or impossible state: see `VehiclePhysics.stateIsSane`) or the car fell
+   * through the world, e.g. launched over a barrier where there is no ground: put it back on the track, stopped, at
+   * the last good position. True if it did.
    */
   private recoverIfLost(): boolean {
     const v = this.vehicle;
-    const p = v.position;
-    const finite = Number.isFinite(p.x + p.y + p.z) && Number.isFinite(v.velocity.x + v.velocity.y + v.velocity.z)
-      && Number.isFinite(v.angularVelocity.x + v.angularVelocity.y + v.angularVelocity.z);
     const s = Number.isFinite(this.s) ? this.s : 0;
-    if (finite && p.y > this.track.getSampleAtDistance(s).position.y - LOST_BELOW_TRACK_M) return false;
+    if (v.stateIsSane() && v.position.y > this.track.getSampleAtDistance(s).position.y - LOST_BELOW_TRACK_M) return false;
     this.teleportToDistance(s, 0, 0);
     return true;
   }
@@ -1382,7 +1611,7 @@ export class F12026CarSim implements SimulatorCar {
   private afterPlacement(): void {
     this.gamepadAssist.reset();
     this.padSteerActive = false;
-    this.tcCut = this.absCut = this.apTc = this.apAbs = 1;
+    this.tcCut = this.absCut = 1;
     this.absWheelCut.fill(1);
     for (let i = 0; i < 4; i++) this.prevWheelOmega[i] = this.vehicle.wheels[i].omega;
     this.apPedal = this.apYawI = this.apThrottle = 0;
@@ -1403,7 +1632,7 @@ export class F12026CarSim implements SimulatorCar {
 
   private applyColdPressures(): void {
     for (const w of this.vehicle.wheels) {
-      w.coldPressurePsi = w.isFront ? this.coldPsi.front : this.coldPsi.rear;
+      w.coldPressurePsi = pressureAt(this.coldPsi, w.isFront, w.isLeft);
       w.pressurePsi = w.coldPressurePsi;
     }
   }
@@ -1492,8 +1721,9 @@ export class F12026CarSim implements SimulatorCar {
     const lapTime = this.simTimeMs - this.lapStartMs;
     this.onSectorCompleted(3);
     this.lapStartMs = this.simTimeMs;
-    // Judged track limits: a lap that ends while an excursion is still being judged cannot count
-    const valid = this.lapValid && !(this.trackLimitsMode === 'judged' && (this.trackLimitsHold || t.offTrack));
+    // A lap that ends while an excursion was still being judged is no longer deleted:
+    // the lap recorder converts it to +3000 ms, so lastLapValid stays true here.
+    const valid = this.lapValid;
     if (lapTime > 45_000) {
       t.lastLapTimeMs = lapTime;
       if (valid && (t.bestLapTimeMs === null || lapTime < t.bestLapTimeMs)) t.bestLapTimeMs = lapTime;
@@ -1505,7 +1735,11 @@ export class F12026CarSim implements SimulatorCar {
     t.lapInvalid = false;
   }
 
-  /** Race control deleted the running lap (judged track limits) */
+  /**
+   * Legacy: no caller uses this any more. Whole-lap invalidation was abolished in
+   * favour of time penalties, so this method is kept only so older call sites and
+   * the SimulatorCar interface still compile; laps are penalised, never deleted.
+   */
   public invalidateLap(): void {
     this.lapValid = false;
     this.telemetry.lapInvalid = true;

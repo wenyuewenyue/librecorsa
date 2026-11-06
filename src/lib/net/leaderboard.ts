@@ -49,6 +49,8 @@ const remote: RemoteBackend | null =
 
 /** True when an online leaderboard is configured */
 export const remoteLeaderboardEnabled = remote !== null;
+/** Deleting an online row is only implemented for the Worker backend */
+export const remoteDeleteSupported = remote?.kind === "worker";
 
 /** Headers for a request to the remote board (Supabase needs its publishable key on every call) */
 function remoteHeaders(json: boolean): Record<string, string> {
@@ -198,14 +200,18 @@ function toWirePayload(rec: LapRecording): LapRecording {
     recordedAt: rec.recordedAt,
     sampleHz: rec.sampleHz,
     data: rec.data,
+    ...(rec.wallReturns ? { wallReturns: rec.wallReturns } : {}),
+    ...(rec.flashbacks ? { flashbacks: rec.flashbacks } : {}),
+    ...(rec.trackLimitsPenaltyMs ? { trackLimitsPenaltyMs: rec.trackLimitsPenaltyMs } : {}),
+    ...(rec.autopilotPenaltyMs ? { autopilotPenaltyMs: rec.autopilotPenaltyMs } : {}),
   };
 }
 
 /** Uploads a valid lap with its ghost (Worker: POST /laps, Supabase: rpc/submit_lap). Resolves { ok, rank?, error? } */
 export async function submitLap(rec: LapRecording): Promise<{ ok: boolean; rank?: number; error?: string }> {
-  if (!remote) return { ok: false, error: "No online leaderboard is configured" };
+  if (!remote) return { ok: false, error: "未配置在线排行榜" };
   const valid = validateLapRecording(rec);
-  if (!valid) return { ok: false, error: "The lap recording is invalid" };
+  if (!valid) return { ok: false, error: "圈速记录无法核对" };
   const payload = toWirePayload(valid);
   const res = await requestJson(remote.kind === "supabase" ? `${remote.url}/submit_lap` : `${remote.url}/laps`, {
     method: "POST",
@@ -213,14 +219,29 @@ export async function submitLap(rec: LapRecording): Promise<{ ok: boolean; rank?
     // Supabase claims the driver's name with this browser's key; the Worker has no name claims
     body: JSON.stringify(remote.kind === "supabase" ? { rec: payload, driver_key: getOrCreateDriverKey() } : payload),
   });
-  if (!res) return { ok: false, error: "Could not reach the leaderboard" };
+  if (!res) return { ok: false, error: "无法连接排行榜" };
   const body: Record<string, unknown> = isRecord(res.body) ? res.body : {};
   if (res.status >= 200 && res.status < 300 && body.ok === true) {
     const rank = finiteNumber(body.rank);
     return rank === null ? { ok: true } : { ok: true, rank };
   }
   const message = cappedString(body.error, MAX_ERROR_LENGTH);
-  return { ok: false, error: message ?? `Leaderboard rejected the lap (HTTP ${res.status})` };
+  return { ok: false, error: message ?? `排行榜拒绝了该圈速（HTTP ${res.status}）` };
+}
+
+/** Deletes one online row (Worker: DELETE /laps/<id>); the local best is untouched */
+export async function deleteRemoteLap(id: string): Promise<{ ok: boolean; error?: string }> {
+  if (!remote) return { ok: false, error: "未配置在线排行榜" };
+  if (remote.kind !== "worker") return { ok: false, error: "此排行榜后端不支持删除" };
+  if (cappedString(id, MAX_ID_LENGTH) === null) return { ok: false, error: "记录不存在" };
+  const res = await requestJson(`${remote.url}/laps/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: remoteHeaders(false),
+  });
+  if (!res) return { ok: false, error: "无法连接排行榜" };
+  if (res.status >= 200 && res.status < 300 && isRecord(res.body) && res.body.ok === true) return { ok: true };
+  const message = isRecord(res.body) ? cappedString(res.body.error, MAX_ERROR_LENGTH) : null;
+  return { ok: false, error: message ?? `删除失败（HTTP ${res.status}）` };
 }
 
 /** Downloads a remote lap's ghost (Worker: GET /laps/<id>, Supabase: rpc/get_lap) → LapRecording (validated) or null */

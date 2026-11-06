@@ -12,6 +12,15 @@ import type { RacingLineId, RunoffStyle, TrackSamplePoint } from "@/types/f1";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/examples/jsm/libs/meshopt_decoder.module.js";
 import { assetProgress } from "@/lib/loading/asset-progress";
+import { getPreloadedTrackScene } from "@/lib/loading/track-glb-cache";
+import { applySceneryDetail, prepareTreeGeometry, sceneryKind, setSceneryTime } from "@/lib/render/scenery-detail";
+import { attachSceneryInstances, loadSceneryInstances, resetSceneryInstances } from "@/lib/render/scenery-instances";
+import { applySceneryTextures, loadSceneryTextures } from "@/lib/render/scenery-textures";
+import { cleanScanMaterial } from "@/lib/render/scan-materials";
+import { createGroundHit, type GroundQuery } from "@/lib/sim/f12026-car/TrackColliderQuery";
+
+/** Height of a racing-line dash over the driving surface: clear of its ripple, low enough to read as paint */
+const DASH_SEAT_LIFT_M = 0.035;
 
 export interface BuiltRwandaScene {
   sceneGroup: THREE.Group;
@@ -21,6 +30,11 @@ export interface BuiltRwandaScene {
   updateEnvironment: (elapsedSeconds: number) => void;
   /** Recolours the braking line ahead of the car; `guide` = the car's own braking guide (else the circuit's) */
   updateDynamicRacingLine: (carS: number, carSpeedMs: number, guide?: BrakingGuide | null) => void;
+  /**
+   * Sits the racing-line dashes on the real driving surface (the centreline profile misses the road's crown and
+   * camber away from the centre, so off-centre dashes sank into or floated over it)
+   */
+  seatRacingLine: (ground: GroundQuery) => void;
   /** Start gantry: null = idle (green), 0..5 = number of red lights lit */
   setStartLights: (redCount: number | null) => void;
   /**
@@ -35,7 +49,8 @@ export interface BuiltRwandaScene {
 // extras.collider = true), Terrain, Lake, Env_* (vegetation, canopies) and Prop_* (buildings, stands, gantry).
 // The other circuits (scripts/tracks/build_track.py) wrap a converted scan in `Track_Model` and append hidden
 // `Track_Collider_*` / `Track_Surface_*` physics meshes (extras.hidden = true); `track.meshUrl` names the file.
-// They also carry `Track_Kerbs_Visual`: the physics kerbs (Track_Surface_Kerb) drawn in red / white paint over the scan.
+// Older builds also carry `Track_Kerbs_Visual` (the physics kerbs in red / white paint over the scan): hidden, the scan
+// shows its own kerbs.
 
 // Flat overlays drawn on top of the asphalt / run-off; pulled towards the camera to avoid z-fighting.
 const DECAL_NODES: Record<string, number> = {
@@ -46,6 +61,49 @@ const DECAL_NODES: Record<string, number> = {
   Track_Kerbs_Visual: -1,
   Track_Runoff_Paint: -1,
 };
+/**
+ * Diffuse roughness (EON diffuse BRDF, three r187+) for the circuits' concrete by material name. Rough surfaces
+ * back-scatter: with the low golden-hour sun behind the camera sunlit concrete reads brighter, and looking into the
+ * sun a little darker, where Lambert shading looks the same from every side. Only materials named per surface
+ * match (Rwanda's Pit_Apron_Concrete, Motegi's *CONCRETE*); the scanned circuits share one atlas material and keep
+ * plain Lambert.
+ *
+ * The terrain grass stays Lambert on purpose: the rough lobe flattens the shading across slopes, so the ground's
+ * relief (the real elevation of the site) read differently from how it was modelled.
+ */
+const ROUGH_DIFFUSE: readonly (readonly [RegExp, number])[] = [[/concrete/i, 0.5]];
+const roughDiffuseConversions = new WeakMap<THREE.Material, THREE.Material>();
+
+/** The material with its rough-diffuse lobe: physical materials in place, standard ones as a shared physical copy */
+function withRoughDiffuse(mat: THREE.Material): THREE.Material {
+  const std = mat as THREE.MeshStandardMaterial;
+  if (!std.isMeshStandardMaterial) return mat;
+  const amount = ROUGH_DIFFUSE.find(([re]) => re.test(mat.name))?.[1];
+  if (amount === undefined) return mat;
+  const phys = mat as THREE.MeshPhysicalMaterial;
+  // three 0.187 has no diffuseRoughness on MeshPhysicalMaterial's types (and no
+  // such uniform in its build): keep the assignment via a cast so it takes
+  // effect if a future three adds the property, and is a harmless no-op now.
+  const withDiffuseRoughness = (m: THREE.MeshPhysicalMaterial) => {
+    (m as unknown as { diffuseRoughness: number }).diffuseRoughness = amount;
+  };
+  if (phys.isMeshPhysicalMaterial) {
+    withDiffuseRoughness(phys);
+    return mat;
+  }
+  let out = roughDiffuseConversions.get(mat);
+  if (!out) {
+    const copy = new THREE.MeshPhysicalMaterial();
+    THREE.MeshStandardMaterial.prototype.copy.call(copy, std);
+    // MeshStandardMaterial.copy() resets the defines to STANDARD only
+    copy.defines = { STANDARD: "", PHYSICAL: "" };
+    withDiffuseRoughness(copy);
+    roughDiffuseConversions.set(mat, copy);
+    out = copy;
+  }
+  return out;
+}
+
 const SHADOW_RECEIVE_ONLY = new Set([
   "Terrain",
   "Lake",
@@ -96,21 +154,26 @@ function loadTrackGlb(
   glbGroup: THREE.Group,
   fallbackGroup: THREE.Group,
   onLoaded: (root: THREE.Object3D) => void,
-  sheenMask: RacingLineMask
+  sheenMask: RacingLineMask,
+  /** Scenery files that replace some of the circuit's own (scenery-instances.ts); loaded alongside */
+  sceneryUrls: readonly string[] = [],
+  /** A manifest of the circuit's own textures replacing a track pack's images (scenery-textures.ts) */
+  sceneryTexturesUrl: string | null = null,
+  /** The scan's racing-surface materials (track data `mesh.roadMaterials`): drawn with the asphalt shader */
+  roadMaterials: readonly string[] = []
 ): void {
+  const roadMaterialNames = new Set(roadMaterials);
   if (typeof window === "undefined" || typeof fetch === "undefined") {
     return;
   }
+  resetSceneryInstances();
+  const sceneryLoad = Promise.all(sceneryUrls.map(loadSceneryInstances));
+  const texturesLoad = sceneryTexturesUrl ? loadSceneryTextures(sceneryTexturesUrl) : Promise.resolve(null);
 
   // `?colliders=1`: draw the physics surfaces (by type) and barriers over the scan, to check them against it
   const showColliders = new URLSearchParams(window.location.search).get("colliders") === "1";
   assetProgress.begin("track");
-  // Circuit scans are meshopt-compressed (scripts/compress-track-glb.mjs)
-  new GLTFLoader()
-    .setMeshoptDecoder(MeshoptDecoder)
-    .loadAsync(withBasePath(url), (event) => assetProgress.progress("track", event))
-    .then((gltf) => {
-      const root = gltf.scene;
+  const processRoot = (root: THREE.Object3D) => {
       root.name = "Rwanda2026Track";
       const box = new THREE.Box3();
       const size = new THREE.Vector3();
@@ -136,6 +199,12 @@ function loadTrackGlb(
           return;
         }
         if (!(obj instanceof THREE.Mesh)) return;
+        // The scans show their own kerbs: the generated red / white overlay older builds drew over them stays hidden
+        // (its physics twin, Track_Surface_Kerb, is a collider and unaffected)
+        if (topName === "Track_Kerbs_Visual") {
+          obj.visible = false;
+          return;
+        }
 
         const receiveOnly = SHADOW_RECEIVE_ONLY.has(topName);
         obj.receiveShadow = true;
@@ -148,11 +217,29 @@ function loadTrackGlb(
           obj.castShadow = !receiveOnly && (topName.startsWith("Prop_") || topName.startsWith("Env_") || topName.startsWith("Track_"));
         }
 
+        if (topName === "Track_Model") {
+          for (const m of Array.isArray(obj.material) ? obj.material : [obj.material]) cleanScanMaterial(m);
+        }
+        obj.material = Array.isArray(obj.material) ? obj.material.map(withRoughDiffuse) : withRoughDiffuse(obj.material);
         const offset = DECAL_NODES[topName];
         const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        // Flat, untextured scenery (Rwanda's trees, roofs, spire, lake, paint): shader detail, and the trees'
+        // normals, tint and occlusion baked into their geometry (scenery-detail.ts)
+        let treeShading = false;
+        let baseY = 0;
+        if (mats.some((m) => sceneryKind(m) !== null)) {
+          if (mats.some((m) => m.name === "Tree_Trunk" || m.name === "Tree_Canopy")) {
+            treeShading = prepareTreeGeometry(obj.geometry, mats.some((m) => m.name === "Tree_Trunk") ? "trunk" : "canopy");
+          }
+          obj.geometry.computeBoundingBox();
+          baseY = box.copy(obj.geometry.boundingBox!).applyMatrix4(obj.matrixWorld).min.y;
+        }
         for (const mat of mats) {
+          applySceneryDetail(mat, { baseY, treeShading });
           if (!(mat instanceof THREE.MeshStandardMaterial)) continue;
-          if (topName === "Track_Asphalt_Road") applyAsphaltSheen(mat, sheenMask);
+          if (topName === "Track_Asphalt_Road" || (topName === "Track_Model" && roadMaterialNames.has(mat.name))) {
+            applyAsphaltSheen(mat, sheenMask);
+          }
           for (const tex of [mat.map, mat.roughnessMap, mat.metalnessMap, mat.normalMap]) {
             if (tex) tex.anisotropy = 8;
           }
@@ -164,13 +251,35 @@ function loadTrackGlb(
         }
         if (offset !== undefined) obj.renderOrder = 1;
       });
-      glbGroup.add(root);
-      onLoaded(root);
+      return Promise.all([sceneryLoad, texturesLoad])
+        .then(([files, textures]) => {
+          if (textures) applySceneryTextures(root, textures);
+          // Before onLoaded, so the camera occlusion pass and the shader warm-up see them
+          for (const scenery of files) if (scenery) attachSceneryInstances(root, scenery);
+          return root;
+        })
+        .then((resolvedRoot) => {
+          glbGroup.add(resolvedRoot);
+          onLoaded(resolvedRoot);
 
-      // Hide the procedural stand-in geometry once the authored circuit is live
-      fallbackGroup.visible = false;
-      assetProgress.done("track");
-    })
+          // Hide the procedural stand-in geometry once the authored circuit is live
+          fallbackGroup.visible = false;
+          assetProgress.done("track");
+        });
+    };
+  // A scene the background preloader already parsed skips download + parse
+  // entirely (except in the colliders debug view, whose material swap would
+  // pollute the cache).
+  const cached = !showColliders ? getPreloadedTrackScene(url) : null;
+  if (cached) {
+    processRoot(cached);
+    return;
+  }
+  // Circuit scans are meshopt-compressed (scripts/compress-track-glb.mjs)
+  new GLTFLoader()
+    .setMeshoptDecoder(MeshoptDecoder)
+    .loadAsync(withBasePath(url), (event) => assetProgress.progress("track", event))
+    .then((gltf) => processRoot(gltf.scene))
     .catch((err) => {
       console.warn("Using fallback procedural track geometry:", err);
       assetProgress.fail("track");
@@ -512,10 +621,26 @@ export function buildRwandaCircuitScene(
   fallbackGroup.name = "FallbackProceduralGroup";
   sceneGroup.add(fallbackGroup);
 
+  // When the GLB scene is already parsed in the cache (background preloader
+  // or the TrackGate parse), the fallback geometry below is hidden the
+  // instant loadTrackGlb runs, so building it synchronously on every
+  // switch only adds a freeze and never shows on screen. Skip it in
+  // that case; the colliders debug view still needs it, so it is exempt.
+  // The racing line, start lights and jet (sceneGroup, not fallbackGroup)
+  // are built unconditionally below.
+  const glbUrl = track.meshUrl ?? "/tracks/rwanda/rwanda_2026.glb";
+  const showColliders =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("colliders") === "1";
+  const glbCached = !showColliders && getPreloadedTrackScene(glbUrl) !== null;
+  // Needed by the GLB asphalt material at the end even when the fallback
+  // ribbon (which normally creates it) is skipped; cached per track.
+  const sheenMask = createRacingLineMask(track);
 
   const samples = track.samples;
   const n = samples.length;
 
+  if (!glbCached) {
   // ============================================================================
   // 1. FALLBACK ASPHALT TRACK RIBBON MESH (Active before the circuit GLB finishes loading)
   // ============================================================================
@@ -751,6 +876,7 @@ export function buildRwandaCircuitScene(
     })
   );
   fallbackGroup.add(kerbMesh);
+  } // end if (!glbCached): fallback ribbon / runoff / kerbs
 
   // ============================================================================
   // 3. DYNAMIC 3D DASHED RACING & BRAKING LINE (Along exact fast_lane.ai coordinates)
@@ -760,6 +886,9 @@ export function buildRwandaCircuitScene(
   const rlColors: number[] = [];
   const rlIndices: number[] = [];
 
+  // The driving surface the dashes sit on, once the track's colliders are in
+  let dashGround: GroundQuery | null = null;
+  const dashHit = createGroundHit();
   // Crisp 3D dashed rectangular marker segments along a car's racing line: the four corners of dash i
   const dashCorners = (i: number, line: RacingLineId): number[] => {
     const s0 = samples[i];
@@ -784,7 +913,13 @@ export function buildRwandaCircuitScene(
     const l1 = c1.clone().addScaledVector(bDashEnd, -halfDashW);
     const r1 = c1.clone().addScaledVector(bDashEnd, halfDashW);
 
-    return [l0.x, l0.y, l0.z, r0.x, r0.y, r0.z, l1.x, l1.y, l1.z, r1.x, r1.y, r1.z];
+    const out = [l0.x, l0.y, l0.z, r0.x, r0.y, r0.z, l1.x, l1.y, l1.z, r1.x, r1.y, r1.z];
+    if (dashGround) {
+      for (let k = 0; k < 12; k += 3) {
+        if (dashGround.query(out[k], out[k + 2], out[k + 1] + 1.5, dashHit)) out[k + 1] = dashHit.height + DASH_SEAT_LIFT_M;
+      }
+    }
+    return out;
   };
 
   // Drawn on the F1 line until a car with its own line hands its braking guide over
@@ -837,6 +972,12 @@ export function buildRwandaCircuitScene(
    */
   let lineGuide: BrakingGuide | null = null;
   let drawnLine: RacingLineId = 'f1';
+  const seatRacingLine = (ground: GroundQuery) => {
+    dashGround = ground;
+    for (let i = 0; i < n; i++) rlPositionAttr.array.set(dashCorners(i, drawnLine), i * 12);
+    rlPositionAttr.needsUpdate = true;
+    rlGeom.computeBoundingSphere();
+  };
   const updateDynamicRacingLine = (carS: number, carSpeedMs: number, guide: BrakingGuide | null = null) => {
     // Another car's guidance: repaint the static braking zones from it, on its own racing line
     if (guide !== lineGuide) {
@@ -957,7 +1098,52 @@ export function buildRwandaCircuitScene(
   const attachStartLightsToGantry = (root: THREE.Object3D) => {
     root.updateMatrixWorld(true);
     const assembly = root.getObjectByName("Prop_StartLights_0");
-    if (!assembly) return;
+    if (!assembly) {
+      // Converted circuits (Suzuka / Shanghai / Motegi) have no authored
+      // start-light assembly, so the pods would otherwise hang in mid-air
+      // with no support at all. Give them a side post + arm instead:
+      // the post stands outside the road (half width + 2 m, sunk 2 m so
+      // it stays grounded even if the runoff drops a little), the arm
+      // reaches in to the pod row. Pod positions are unchanged, and
+      // Rwanda (which has an assembly) never takes this branch.
+      if (!sceneGroup.getObjectByName("StartLightSupport")) {
+        const supportMat = new THREE.MeshStandardMaterial({
+          color: 0x1f2937,
+          roughness: 0.6,
+          metalness: 0.2,
+        });
+        const podCenterRight = 2.2;
+        const podHeight = 5.75;
+        const postRight = podCenterRight + startSample.width * 0.5 + 2.0;
+        const rightFlat = new THREE.Vector3(startRight.x, 0, startRight.z).normalize();
+        const postHeight = podHeight + 2.25;
+        const post = new THREE.Mesh(
+          new THREE.BoxGeometry(0.35, postHeight, 0.35),
+          supportMat
+        );
+        post.name = "StartLightSupportPost";
+        post.position.copy(startSample.position).addScaledVector(startRight, postRight);
+        post.position.y = startSample.position.y - 2 + postHeight * 0.5;
+        const armLength = postRight - podCenterRight;
+        const arm = new THREE.Mesh(
+          new THREE.BoxGeometry(armLength, 0.25, 0.25),
+          supportMat
+        );
+        arm.name = "StartLightSupportArm";
+        arm.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), rightFlat);
+        arm.position.copy(startSample.position).addScaledVector(
+          startRight,
+          (postRight + podCenterRight) * 0.5
+        );
+        arm.position.y = startSample.position.y + podHeight;
+        const support = new THREE.Group();
+        support.name = "StartLightSupport";
+        support.add(post);
+        support.add(arm);
+        sceneGroup.add(support);
+      }
+      return;
+    }
     const box = new THREE.Box3().setFromObject(assembly);
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
@@ -968,6 +1154,7 @@ export function buildRwandaCircuitScene(
     placePods(center, depth * 0.5, width / 5);
   };
 
+  if (!glbCached) {
   // ============================================================================
   // 5. COLLISION-VERIFIED TRACKSIDE STRUCTURES (In fallbackGroup for headless verification)
   // ============================================================================
@@ -1127,6 +1314,7 @@ export function buildRwandaCircuitScene(
     pavGroup.add(tentPeak);
     fallbackGroup.add(pavGroup);
   }
+  } // end if (!glbCached): trackside structures
 
   // RwandAir Jetliner Banking in the Sky near Bugesera International Airport
   const jetGroup = new THREE.Group();
@@ -1164,6 +1352,7 @@ export function buildRwandaCircuitScene(
   if (isRwanda) sceneGroup.add(jetGroup);
 
   const updateEnvironment = (elapsedSeconds: number) => {
+    setSceneryTime(elapsedSeconds);
     waterMesh.position.y = -18.0 + Math.sin(elapsedSeconds * 1.4) * 0.08;
     // Gently circle the RwandAir jetliner across the sky near Bugesera Airport
     const jetAngle = elapsedSeconds * 0.045;
@@ -1209,12 +1398,16 @@ export function buildRwandaCircuitScene(
       attachStartLightsToGantry(root);
       resolveTrackRoot(root);
     },
-    sheenMask
+    sheenMask,
+    isRwanda ? ["/tracks/rwanda/scenery/foliage.glb", "/tracks/rwanda/scenery/stands.glb", "/tracks/rwanda/scenery/props.glb"] : [],
+    isRwanda ? "/tracks/rwanda/scenery/textures/textures.json" : null,
+    track.roadMaterials ?? []
   );
 
   return {
     sceneGroup,
     racingLineMesh,
+    seatRacingLine,
     waterMesh,
     startLightMeshes,
     updateEnvironment,
