@@ -16,6 +16,22 @@ interface Env {
   ALLOWED_ORIGIN?: string;
 }
 
+/** One wall-return teleport inside a lap (mirrors src/lib/sim/buff-pack.ts) */
+interface WallReturnEvent {
+  t: number;
+  sBefore: number;
+  sAfter: number;
+  speedKmh: number;
+}
+
+/** One instant-replay flashback teleport inside a lap (mirrors src/lib/sim/buff-pack.ts). Flashback is free: no penalty field, the lap counts at its raw time; the event exists only to explain the sample jump. */
+interface FlashbackEvent {
+  t: number;
+  sBefore: number;
+  sAfter: number;
+  speedKmh: number;
+}
+
 /** Mirrors LapRecording in src/lib/sim/lap-types.ts */
 interface LapRecording {
   version: 1;
@@ -28,6 +44,12 @@ interface LapRecording {
   recordedAt: number;
   sampleHz: number;
   data: number[];
+  wallReturns?: WallReturnEvent[];
+  flashbacks?: FlashbackEvent[];
+  /** Track-limits penalty (ms, +3000 per strike). lapTimeMs is the classified time (raw + penalties). */
+  trackLimitsPenaltyMs?: number;
+  /** Autopilot penalty (ms, +30000 once). Flashback adds nothing. */
+  autopilotPenaltyMs?: number;
 }
 
 /** One row of a board: a lap without its samples */
@@ -56,6 +78,15 @@ const MAX_SECTOR_DRIFT_MS = 50;
 const MIN_PAIR_DT_S = 0.02;
 const MIN_SAMPLES = 10;
 const MAX_SAMPLES = 20000;
+/** Wall-return teleports: at most this many per lap, each moving the car at most this far and resuming at most this speed */
+const MAX_WALL_RETURNS_PER_LAP = 5;
+const MAX_WALL_RETURN_JUMP_M = 50;
+const MAX_WALL_RETURN_SPEED_KMH = 60;
+/** Flashback teleports: at most this many per lap; the jump may be far backwards (up to the 90 s replay window), so no displacement cap, only the plausibility speed cap */
+const MAX_FLASHBACKS_PER_LAP = 10;
+const MAX_FLASHBACK_SPEED_KMH = 420;
+/** Autopilot penalty: exactly this value when present, never any other amount */
+const AUTOPILOT_PENALTY_MS = 30000;
 /** Number of values per sample: t, s, x, y, z, qx, qy, qz, qw, speedKmh, throttle, brake, steer, gear */
 const SAMPLE_STRIDE = 14;
 const VEHICLES = ["vf26", "f12026-car", "amg-gt3"];
@@ -65,7 +96,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 function corsHeaders(env: Env): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": env.ALLOWED_ORIGIN || "*",
-    "Access-Control-Allow-Methods": "GET, POST",
+    "Access-Control-Allow-Methods": "GET, POST, DELETE",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Max-Age": "86400",
   };
@@ -123,7 +154,31 @@ function parseRecording(raw: unknown): Parsed {
     return bad("Invalid sectorTimesMs");
   }
   const [s0, s1, s2] = sectors as [number, number, number];
-  if (Math.abs(s0 + s1 + s2 - lapTimeMs) > MAX_SECTOR_DRIFT_MS) {
+  // Penalties: track limits +3000 ms per strike, autopilot +30000 ms once, flashback
+  // free (0). Declaring a penalty only makes the uploaded time slower, so there is
+  // nothing to gain by forging one. The raw driven time (classified minus penalties)
+  // is what the samples must match. Sectors must match the raw time too, except on
+  // flashback laps, where rewinding across a sector boundary re-records a sector and
+  // the three sectors no longer partition the lap clock.
+  const penaltyRaw = raw.trackLimitsPenaltyMs;
+  const trackLimitsPenaltyMs =
+    penaltyRaw === undefined ? 0 : typeof penaltyRaw === "number" && Number.isInteger(penaltyRaw) ? penaltyRaw : -1;
+  if (trackLimitsPenaltyMs < 0 || trackLimitsPenaltyMs % 3000 !== 0) {
+    return bad("Invalid trackLimitsPenaltyMs");
+  }
+  const autopilotRaw = raw.autopilotPenaltyMs;
+  const autopilotPenaltyMs =
+    autopilotRaw === undefined ? 0 : typeof autopilotRaw === "number" && Number.isInteger(autopilotRaw) ? autopilotRaw : -1;
+  if (autopilotPenaltyMs < 0 || (autopilotPenaltyMs !== 0 && autopilotPenaltyMs !== AUTOPILOT_PENALTY_MS)) {
+    return bad("Invalid autopilotPenaltyMs");
+  }
+  const totalPenaltyMs = trackLimitsPenaltyMs + autopilotPenaltyMs;
+  if (totalPenaltyMs >= lapTimeMs) {
+    return bad("Invalid penalty total");
+  }
+  const rawLapTimeMs = lapTimeMs - totalPenaltyMs;
+  const hasFlashbacks = Array.isArray(raw.flashbacks) && raw.flashbacks.length > 0;
+  if (!hasFlashbacks && Math.abs(s0 + s1 + s2 - rawLapTimeMs) > MAX_SECTOR_DRIFT_MS) {
     return bad("Sector times do not add up to the lap time");
   }
 
@@ -153,14 +208,76 @@ function parseRecording(raw: unknown): Parsed {
     if (!Number.isInteger(gear) || gear < -1 || gear > 8) return bad("Gear out of range");
   }
 
-  // The last sample time must agree with the lap time
+  // The last sample time must agree with the raw driven lap time (not the classified time)
   const lastT = samples[(count - 1) * SAMPLE_STRIDE];
-  if (Math.abs(lapTimeMs / 1000 - lastT) > MAX_TIME_DRIFT_S) {
+  if (Math.abs(rawLapTimeMs / 1000 - lastT) > MAX_TIME_DRIFT_S) {
     return bad("Lap time does not match the samples");
   }
 
-  // Plausibility: consecutive samples must not imply a teleport (speed from positions)
+  // Wall-return events, if any: well-formed, within the per-lap limit, each a small
+  // move at a low resume speed. A forged event cannot hide a large jump, because the
+  // pair check below still requires the event to match the jump it claims to explain.
+  let wallReturns: WallReturnEvent[] = [];
+  if (raw.wallReturns !== undefined) {
+    if (!Array.isArray(raw.wallReturns) || raw.wallReturns.length > MAX_WALL_RETURNS_PER_LAP) {
+      return bad("Invalid wallReturns");
+    }
+    for (const ev of raw.wallReturns) {
+      if (!isRecord(ev)) return bad("Invalid wallReturns");
+      const t = ev.t;
+      const sBefore = ev.sBefore;
+      const sAfter = ev.sAfter;
+      const speedKmh = ev.speedKmh;
+      if (!isFiniteNumber(t) || !isFiniteNumber(sBefore) || !isFiniteNumber(sAfter) || !isFiniteNumber(speedKmh)) {
+        return bad("Invalid wallReturns");
+      }
+      if (t < 0 || t > lapTimeMs / 1000) return bad("Invalid wallReturns");
+      if (sBefore < 0 || sAfter < 0) return bad("Invalid wallReturns");
+      if (Math.abs(sAfter - sBefore) > MAX_WALL_RETURN_JUMP_M) return bad("Invalid wallReturns");
+      if (speedKmh < 0 || speedKmh > MAX_WALL_RETURN_SPEED_KMH) return bad("Invalid wallReturns");
+      wallReturns.push({ t, sBefore, sAfter, speedKmh });
+    }
+  }
+
+  // Flashback events, if any: well-formed, within the per-lap limit, resume speed
+  // within the plausibility cap. Unlike wall returns, the jump may be far backwards
+  // (the replay window is 90 s), so no displacement cap is applied here — the pair
+  // check below still requires the event to match the jump it claims to explain.
+  let flashbacks: FlashbackEvent[] = [];
+  if (raw.flashbacks !== undefined) {
+    if (!Array.isArray(raw.flashbacks) || raw.flashbacks.length > MAX_FLASHBACKS_PER_LAP) {
+      return bad("Invalid flashbacks");
+    }
+    for (const ev of raw.flashbacks) {
+      if (!isRecord(ev)) return bad("Invalid flashbacks");
+      const t = ev.t;
+      const sBefore = ev.sBefore;
+      const sAfter = ev.sAfter;
+      const speedKmh = ev.speedKmh;
+      if (!isFiniteNumber(t) || !isFiniteNumber(sBefore) || !isFiniteNumber(sAfter) || !isFiniteNumber(speedKmh)) {
+        return bad("Invalid flashbacks");
+      }
+      if (t < 0 || t > lapTimeMs / 1000) return bad("Invalid flashbacks");
+      if (sBefore < 0 || sAfter < 0) return bad("Invalid flashbacks");
+      if (speedKmh < 0 || speedKmh > MAX_FLASHBACK_SPEED_KMH) return bad("Invalid flashbacks");
+      flashbacks.push({ t, sBefore, sAfter, speedKmh });
+    }
+  }
+
+  // Plausibility: consecutive samples must not imply a teleport (speed from positions).
+  // The final pair is skipped: finishLap's closing sample is timestamped at the interpolated
+  // line-crossing time but carries the frame-after-crossing position, so its implied speed
+  // (a full frame's travel over a partial interval) is meaningless and can exceed 420 km/h
+  // on a legitimate fast lap. Mid-lap teleports are still caught by every earlier pair.
+  // Exceptions, each event explaining at most one pair: a wall-return event (the teleport
+  // happened between those two samples, moved the car only a short way from a wall to the
+  // centreline at the same spot, and resumed at a low speed) and a flashback event (the
+  // teleport happened between those two samples, from the pre-flashback position to the
+  // replay frame's position, at any distance backwards, resuming at a recorded speed).
+  const usedWallEvents = new Set<number>();
+  const usedFlashbackEvents = new Set<number>();
   for (let i = 1; i < count; i++) {
+    if (i === count - 1) continue;
     const a = (i - 1) * SAMPLE_STRIDE;
     const b = i * SAMPLE_STRIDE;
     const dt = samples[b] - samples[a];
@@ -170,7 +287,38 @@ function parseRecording(raw: unknown): Parsed {
       samples[b + 3] - samples[a + 3],
       samples[b + 4] - samples[a + 4],
     );
-    if ((distance / dt) * 3.6 > MAX_SPEED_KMH) return bad("Positions imply a speed above 420 km/h");
+    if ((distance / dt) * 3.6 <= MAX_SPEED_KMH) continue;
+    let explained = false;
+    if (distance <= 30) {
+      for (let e = 0; e < wallReturns.length; e++) {
+        if (usedWallEvents.has(e)) continue;
+        const ev = wallReturns[e];
+        if (ev.t < samples[a] - 0.01 || ev.t > samples[b] + 0.01) continue;
+        if (Math.abs(samples[a + 1] - ev.sBefore) > 25) continue;
+        if (Math.abs(samples[b + 1] - ev.sAfter) > 25) continue;
+        if (samples[b + 9] > 100) continue;
+        usedWallEvents.add(e);
+        explained = true;
+        break;
+      }
+    }
+    if (!explained) {
+      for (let e = 0; e < flashbacks.length; e++) {
+        if (usedFlashbackEvents.has(e)) continue;
+        const ev = flashbacks[e];
+        if (ev.t < samples[a] - 0.01 || ev.t > samples[b] + 0.01) continue;
+        // Sample phase: the teleport happens between two 20 Hz samples, so the
+        // neighbouring samples sit a few metres from the teleport points; 50 m
+        // covers that plus rounding, but not an unrelated jump elsewhere on track.
+        if (Math.abs(samples[a + 1] - ev.sBefore) > 50) continue;
+        if (Math.abs(samples[b + 1] - ev.sAfter) > 50) continue;
+        if (samples[b + 9] > MAX_SPEED_KMH) continue;
+        usedFlashbackEvents.add(e);
+        explained = true;
+        break;
+      }
+    }
+    if (!explained) return bad("Positions imply a speed above 420 km/h");
   }
 
   const rec: LapRecording = {
@@ -184,6 +332,10 @@ function parseRecording(raw: unknown): Parsed {
     recordedAt,
     sampleHz,
     data: samples,
+    ...(wallReturns.length > 0 ? { wallReturns } : {}),
+    ...(flashbacks.length > 0 ? { flashbacks } : {}),
+    ...(trackLimitsPenaltyMs > 0 ? { trackLimitsPenaltyMs } : {}),
+    ...(autopilotPenaltyMs > 0 ? { autopilotPenaltyMs } : {}),
   };
   return { ok: true, rec };
 }
@@ -284,6 +436,28 @@ async function handleList(url: URL, env: Env): Promise<Response> {
   return jsonResponse(env, { laps: board.slice(0, clampLimit(url.searchParams.get("limit"))) });
 }
 
+/** Deletes one online row and its stored lap; the local best is untouched and can be re-uploaded */
+async function handleDeleteLap(id: string, env: Env): Promise<Response> {
+  if (!UUID_PATTERN.test(id)) return fail(env, "Not found", 404);
+  const raw = await env.LAPS.get(`lap:${id}`);
+  if (raw === null) return fail(env, "Not found", 404);
+  let trackId = "";
+  let vehicle = "";
+  try {
+    const parsed = JSON.parse(raw) as { trackId?: unknown; vehicle?: unknown };
+    if (typeof parsed.trackId === "string") trackId = parsed.trackId;
+    if (typeof parsed.vehicle === "string") vehicle = parsed.vehicle;
+  } catch {
+    return fail(env, "Not found", 404);
+  }
+  if (!trackId || !vehicle) return fail(env, "Not found", 404);
+  const boardKey = `board:${trackId}|${vehicle}`;
+  const board = await readBoard(env, boardKey);
+  await env.LAPS.put(boardKey, JSON.stringify(board.filter((e) => e.id !== id)));
+  await env.LAPS.delete(`lap:${id}`);
+  return jsonResponse(env, { ok: true });
+}
+
 async function handleGetLap(id: string, env: Env): Promise<Response> {
   if (!UUID_PATTERN.test(id)) return fail(env, "Not found", 404);
   const raw = await env.LAPS.get(`lap:${id}`);
@@ -293,22 +467,40 @@ async function handleGetLap(id: string, env: Env): Promise<Response> {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    // ALLOWED_ORIGIN is a comma-separated list. Echo back the request origin
+    // only when it is on the list, so both the Pages domain and the custom
+    // domain can read and submit the board; other origins get the first entry.
+    // (Origin is a browser CORS gate only: the handlers never use it for auth.)
+    const requestOrigin = request.headers.get("Origin");
+    const allowedList = (env.ALLOWED_ORIGIN || "*")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const allowedOrigin =
+      requestOrigin && (allowedList.includes("*") || allowedList.includes(requestOrigin))
+        ? requestOrigin
+        : allowedList[0] || "*";
+    const withCors = (res: Response): Response => {
+      res.headers.set("Access-Control-Allow-Origin", allowedOrigin);
+      return res;
+    };
     try {
       if (request.method === "OPTIONS") {
-        return new Response(null, { status: 204, headers: corsHeaders(env) });
+        return withCors(new Response(null, { status: 204, headers: corsHeaders(env) }));
       }
       const url = new URL(request.url);
       const path = url.pathname.replace(/\/+$/, "");
       if (path === "/laps") {
-        if (request.method === "POST") return await handlePost(request, env);
-        if (request.method === "GET") return await handleList(url, env);
-        return fail(env, "Method not allowed", 405);
+        if (request.method === "POST") return withCors(await handlePost(request, env));
+        if (request.method === "GET") return withCors(await handleList(url, env));
+        return withCors(fail(env, "Method not allowed", 405));
       }
       const match = /^\/laps\/([^/]+)$/.exec(path);
-      if (match && request.method === "GET") return await handleGetLap(match[1], env);
-      return fail(env, "Not found", 404);
+      if (match && request.method === "GET") return withCors(await handleGetLap(match[1], env));
+      if (match && request.method === "DELETE") return withCors(await handleDeleteLap(match[1], env));
+      return withCors(fail(env, "Not found", 404));
     } catch {
-      return fail(env, "Internal error", 500);
+      return withCors(fail(env, "Internal error", 500));
     }
   },
 };
