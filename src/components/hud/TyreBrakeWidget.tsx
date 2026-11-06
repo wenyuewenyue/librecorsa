@@ -16,10 +16,10 @@ const COMPOUND: Record<TireCompound, { letter: string; color: string }> = {
 
 /** Damage / surface conditions shown as badges once they matter */
 const CONDITIONS = [
-  { key: "tireGrainLevel", label: "GRAIN", color: HUD_YELLOW, title: "Graining: the tread surface is tearing (too cold underneath while sliding)" },
-  { key: "tireBlisterLevel", label: "BLIST", color: HUD_RED, title: "Blistering: the core overheated" },
-  { key: "tireFlatSpotSeverity", label: "FLAT", color: "#FF6B8A", title: "Flat spot from a lock-up: vibration and less grip" },
-  { key: "tireDirtyLevel", label: "DIRT", color: "#C08A4A", title: "Dirt / marbles picked up off line: cleans up over a few corners" },
+  { key: "tireGrainLevel", label: "起粒", color: HUD_YELLOW, title: "起粒：胎面表面撕裂（滑动时底层过冷）" },
+  { key: "tireBlisterLevel", label: "起泡", color: HUD_RED, title: "起泡：胎芯过热" },
+  { key: "tireFlatSpotSeverity", label: "平斑", color: "#FF6B8A", title: "抱死造成的平斑：振动且抓地力下降" },
+  { key: "tireDirtyLevel", label: "脏污", color: "#C08A4A", title: "偏离赛车线沾上的脏污/轮胎碎屑：几个弯后会清理" },
 ] as const;
 
 /** Level from which a condition shows its badge */
@@ -79,7 +79,7 @@ export const TyreGlyph: React.FC<{
   window?: readonly [number, number];
   className?: string;
 }> = ({ c, window, className = "h-[52px] w-[34px]" }) => {
-  const flat = c.conditions.find((k) => k.label === "FLAT");
+  const flat = c.conditions.find((k) => k.label === "平斑");
   return (
     <span
       className={`relative flex flex-none gap-[2px] rounded-[10px] border-[2.5px] p-[3px] ${className}`}
@@ -112,8 +112,8 @@ export const BrakeBar: React.FC<{ c: CornerData; className?: string }> = ({ c, c
   return (
     <span
       className={`relative flex-none overflow-hidden rounded-full bg-[#11131A] ${className}`}
-      title={`Brake disc ${Math.round(c.brake)} °C${c.brakeCore !== null ? ` · core ${Math.round(c.brakeCore)} °C` : ""}${
-        c.padMu !== null ? ` · pad bite ${Math.round(c.padMu * 100)}%` : ""
+      title={`刹车盘 ${Math.round(c.brake)} °C${c.brakeCore !== null ? ` · 盘芯 ${Math.round(c.brakeCore)} °C` : ""}${
+        c.padMu !== null ? ` · 刹车片咬合 ${Math.round(c.padMu * 100)}%` : ""
       }`}
     >
       <span
@@ -150,14 +150,14 @@ export const TyreCornerCard: React.FC<{ t: CarTelemetry; i: number; dense?: bool
       className={`flex min-w-0 items-start gap-2 rounded-[14px] border border-[#1B1F2B] bg-[#050608] ${dense ? "p-1.5" : "p-2"} ${
         right ? "flex-row-reverse text-right" : ""
       }`}
-      title={`${CORNERS[i]} tread ${c.bands.map((b) => Math.round(b)).join(" / ")} °C (as seen from behind)`}
+      title={`${CORNERS[i]} 胎面 ${c.bands.map((b) => Math.round(b)).join(" / ")} °C（从后方看）`}
     >
       {glyph}
       {brake}
       <span className={`flex min-w-0 flex-1 flex-col gap-[1px] ${right ? "items-end" : "items-start"}`}>
         <span className={`flex w-full items-baseline justify-between gap-1 ${right ? "flex-row-reverse" : ""}`}>
           <span className={HUD_LBL}>{CORNERS[i]}</span>
-          <span className="lc-data text-[10px]" style={{ color: lifeColor }} title="Tread life">
+          <span className="lc-data text-[10px]" style={{ color: lifeColor }} title="胎面寿命">
             {Math.round(c.life)}%
           </span>
         </span>
@@ -206,7 +206,7 @@ export const CompoundRing: React.FC<{ compound: TireCompound; size?: number }> =
     <span
       className="lc-disp inline-flex shrink-0 items-center justify-center rounded-full text-[#F5F7FA]"
       style={{ width: size, height: size, border: `${Math.max(2, Math.round(size / 6))}px solid ${c.color}`, fontSize: Math.round(size * 0.48) }}
-      aria-label={`${compound} tyres`}
+      aria-label={`${compound} 轮胎`}
     >
       {c.letter}
     </span>
@@ -227,10 +227,10 @@ export const TyreBrakeGrid: React.FC<{ t: CarTelemetry; compound?: TireCompound;
         <div className="flex items-center justify-between gap-2">
           <span className="lc-data inline-flex items-center gap-2 text-[10px] tracking-[0.12em] text-[#F5F7FA]">
             <span className="h-1.5 w-1.5 rounded-full bg-[#CCFF00]" />
-            TYRES · O/M/I · BRAKES
+            轮胎 · 外/中/内 · 刹车
           </span>
           <span className="flex items-center gap-2">
-            <span className="font-f1-mono text-[9px] font-extrabold tracking-[0.1em] text-[#8E96AA]" title="Working window of the tread">
+            <span className="font-f1-mono text-[9px] font-extrabold tracking-[0.1em] text-[#8E96AA]" title="胎面工作窗口">
               <span style={{ color: HUD_CYAN }}>◂</span>
               <span style={{ color: HUD_GREEN }}>
                 {Math.round(w[0])}–{Math.round(w[1])}°
@@ -261,7 +261,7 @@ export const TyreMini: React.FC<{ t: CarTelemetry; i: number }> = ({ t, i }) => 
   return (
     <div
       className="flex min-w-0 items-center gap-1.5 rounded-[10px] border border-[#1B1F2B] bg-[#050608] px-1.5 py-1"
-      title={`${CORNERS[i]}: tread ${c.bands.map((b) => Math.round(b)).join("/")} °C · ${c.psi?.toFixed(1) ?? "--"} psi · brake ${Math.round(c.brake)} °C${
+      title={`${CORNERS[i]}：胎面 ${c.bands.map((b) => Math.round(b)).join("/")} °C · ${c.psi?.toFixed(1) ?? "--"} psi · 刹车 ${Math.round(c.brake)} °C${
         worst ? ` · ${worst.label}` : ""
       }`}
     >

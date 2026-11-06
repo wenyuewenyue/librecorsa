@@ -22,12 +22,12 @@ const STEPS: Record<WizardMode, readonly WizardStepId[]> = {
   controls: ["device", "setup"],
 };
 
-const SETUP_TITLES = { keyboard: "Keyboard", controller: "Controller", wheel: "Wheel & pedals" } as const;
+const SETUP_TITLES = { keyboard: "键盘", controller: "手柄", wheel: "方向盘与踏板" } as const;
 
 const STEP_INFO: Record<Exclude<WizardStepId, "setup">, { title: string; detail: string }> = {
-  device: { title: "How do you drive?", detail: "Pick your input. You can change it any time from the menu." },
-  assists: { title: "Driving assists", detail: "Pick a starting point; every switch stays in the pause menu." },
-  car: { title: "Your car", detail: "Choose a car and livery, then head for the grid." },
+  device: { title: "你怎么开车？", detail: "选择你的输入设备。随时可以在菜单中更改。" },
+  assists: { title: "驾驶辅助", detail: "选个起点；所有开关都保留在暂停菜单中。" },
+  car: { title: "你的赛车", detail: "选择赛车和涂装，然后前往发车格。" },
 };
 
 export interface FirstRunWizardProps extends SetupStepProps {
@@ -93,10 +93,10 @@ export const FirstRunWizard: React.FC<FirstRunWizardProps> = (props) => {
           title: SETUP_TITLES[props.settings.device],
           detail:
             props.settings.device === "wheel"
-              ? "Calibrate steering and pedals; map your paddles."
+              ? "校准转向和踏板；映射换挡拨片。"
               : props.settings.device === "controller"
-                ? "Check your inputs and pick how the steering feels."
-                : "Every key can be rebound. Click a key, then press the new one.",
+                ? "检查输入并选择转向手感。"
+                : "每个按键都可重新绑定。点击一个按键，然后按下新按键。",
         }
       : STEP_INFO[step];
 
@@ -125,8 +125,8 @@ export const FirstRunWizard: React.FC<FirstRunWizardProps> = (props) => {
           {/* Step rail (roomy screens): where you are in the setup */}
           <aside className="hidden w-[230px] shrink-0 flex-col gap-9 not-compact:flex">
             <LibreCorsaLogo variant="compact" size="sm" />
-            <nav aria-label="Setup steps" className="flex flex-col">
-              <span className="lc-lbl mb-3.5">{mode === "first-run" ? "First-time setup" : "Controls"}</span>
+            <nav aria-label="设置步骤" className="flex flex-col">
+              <span className="lc-lbl mb-3.5">{mode === "first-run" ? "首次设置" : "操作设置"}</span>
               {steps.map((s, i) => {
                 const done = i < stepIndex;
                 const current = i === stepIndex;
@@ -150,7 +150,7 @@ export const FirstRunWizard: React.FC<FirstRunWizardProps> = (props) => {
                               : "border-2 border-[#262B3D] text-[#8E96AA]"
                         }`}
                       >
-                        {done ? <Check aria-label="Done" className="h-[15px] w-[15px]" strokeWidth={3.2} /> : i + 1}
+                        {done ? <Check aria-label="已完成" className="h-[15px] w-[15px]" strokeWidth={3.2} /> : i + 1}
                       </span>
                       <span
                         className={`text-[16px] leading-tight ${
@@ -170,7 +170,7 @@ export const FirstRunWizard: React.FC<FirstRunWizardProps> = (props) => {
             <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-2 font-f1-mono text-[11px] font-extrabold tracking-[0.18em] text-[#CCFF00] uppercase">
                 <span aria-hidden className="h-[7px] w-[7px] shrink-0 rounded-full bg-[#CCFF00]" />
-                {mode === "first-run" ? "First-time setup" : "Controls"} · Step {stepIndex + 1} of {steps.length}
+                {mode === "first-run" ? "首次设置" : "操作设置"} · 第 {stepIndex + 1} / {steps.length} 步
               </div>
               <span className="not-compact:hidden">
                 <LibreCorsaLogo variant="compact" className="hidden sm:inline-flex" />
@@ -210,7 +210,7 @@ export const FirstRunWizard: React.FC<FirstRunWizardProps> = (props) => {
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3.5 border-t border-[#262B3D]/70 pt-4 short:mt-2 short:pt-2">
           <div className="flex items-center gap-[18px]">
             <PrimaryButton tone="dark" onClick={back} prompt={pad ? <PadGlyph button="b" family={family} /> : "ESC"}>
-              {stepIndex === 0 ? (mode === "first-run" ? "Main menu" : "Close") : "Back"}
+              {stepIndex === 0 ? (mode === "first-run" ? "主菜单" : "关闭") : "上一步"}
             </PrimaryButton>
             {onSkip && !last ? (
               <button
@@ -218,7 +218,7 @@ export const FirstRunWizard: React.FC<FirstRunWizardProps> = (props) => {
                 onClick={onSkip}
                 className="min-h-[44px] cursor-pointer border-0 bg-transparent p-0 font-f1-mono text-[11px] font-extrabold tracking-[0.14em] text-[#8E96AA] uppercase transition-colors duration-200 hover:text-[#CCFF00]"
               >
-                Skip · use defaults
+                跳过 · 使用默认设置
               </button>
             ) : null}
           </div>
@@ -226,13 +226,13 @@ export const FirstRunWizard: React.FC<FirstRunWizardProps> = (props) => {
             <PromptBar
               className="hidden sm:flex"
               prompts={[
-                { action: "move", label: "Move" },
-                { action: "select", label: "Select" },
-                { action: "tabs", label: "Step" },
+                { action: "move", label: "移动" },
+                { action: "select", label: "选择" },
+                { action: "tabs", label: "步骤" },
               ]}
             />
             <PrimaryButton onClick={next} prompt={pad ? <PadGlyph button="menu" family={family} /> : "ENTER"}>
-              {last ? (mode === "first-run" ? "Lights out" : "Done") : "Next"}
+              {last ? (mode === "first-run" ? "灯灭发车" : "完成") : "下一步"}
             </PrimaryButton>
           </div>
         </div>

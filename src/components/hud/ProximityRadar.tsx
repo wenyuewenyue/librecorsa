@@ -107,8 +107,8 @@ export const ProximityRadar: React.FC<{ blips: RadarBlip[] | undefined; size?: n
       role="img"
       aria-label={
         evaluated.length
-          ? `${evaluated.length} car${evaluated.length > 1 ? "s" : ""} close by${leftCar ? ", one alongside on the left" : ""}${rightCar ? ", one alongside on the right" : ""}`
-          : "Radar clear"
+          ? `${evaluated.length}辆车在附近${leftCar ? "，左侧有车并排" : ""}${rightCar ? "，右侧有车并排" : ""}`
+          : "雷达无车辆"
       }
     >
       <svg viewBox={`${-VIEW_RANGE_M} ${-VIEW_RANGE_M} ${VIEW_RANGE_M * 2} ${VIEW_RANGE_M * 2}`} className="h-full w-full">

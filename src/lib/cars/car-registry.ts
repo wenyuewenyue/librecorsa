@@ -1,5 +1,16 @@
 import type { VehicleModelId } from "@/types/f1";
-import { AMR26_SOUND, type CarSoundSource } from "@/lib/sim/CarAudio";
+import {
+  BMW_M4_GT3_SOUND,
+  F2004_SOUND,
+  FA26_SOUND,
+  R25_SOUND,
+  RB8_SOUND,
+  RB22_SOUND,
+  SF26_SOUND,
+  SF71H_SOUND,
+  W17_SOUND,
+  type CarSoundSource,
+} from "@/lib/sim/CarAudio";
 import { AMG_GT3_SOUND } from "@/lib/sim/gt3/AmgGt3Sim";
 
 /**
@@ -8,7 +19,19 @@ import { AMG_GT3_SOUND } from "@/lib/sim/gt3/AmgGt3Sim";
  * needs its GLB (`public/cars/<id>/model/`), its sound bank (`public/cars/<id>/audio/`) and an entry here.
  * The first car of each vehicle model keeps the model's id, so saved choices and `?car=` links still resolve.
  */
-export type CarId = "vf26" | "f12026-car" | "amg-gt3";
+export type CarId =
+  | "vf26"
+  | "f12026-car"
+  | "sf26"
+  | "w17"
+  | "rb22"
+  | "sf71h"
+  | "rb8"
+  | "r25"
+  | "f2004"
+  | "amg-gt3"
+  | "amg-gt3-evo"
+  | "bmw-m4-gt3";
 
 export type CarClassId = "f1-2026" | "gt3";
 
@@ -33,37 +56,127 @@ export interface CarDefinition {
 }
 
 export const CAR_CLASSES: readonly CarClass[] = [
-  { id: "f1-2026", title: "F1 2026", sub: "Active aero · hybrid", color: "#CCFF00" },
-  { id: "gt3", title: "GT3", sub: "ABS · TC", color: "#00E5FF" },
+  { id: "f1-2026", title: "F1 2026 方程式", sub: "主动空力 · 混动", color: "#CCFF00" },
+  { id: "gt3", title: "GT3 房车赛", sub: "ABS · TC", color: "#00E5FF" },
 ];
 
 export const CARS: readonly CarDefinition[] = [
   {
     id: "vf26",
     classId: "f1-2026",
-    title: "FA-26 Prototype",
-    sub: "Curvilinear 2026 model · active aero",
+    title: "FA-26 原型车",
+    sub: "2026 曲线模型 · 主动空力",
     badge: "FA-26",
     physics: "vf26",
-    sound: AMR26_SOUND,
+    sound: FA26_SOUND,
   },
   {
     id: "f12026-car",
     classId: "f1-2026",
-    title: "FA-26 Rigid-Body",
-    sub: "6-DOF rigid-body · track colliders · DRS",
+    title: "FA-26 刚体版",
+    sub: "6-DOF 刚体 · 赛道碰撞体 · DRS",
     badge: "6-DOF",
     physics: "f12026-car",
-    sound: AMR26_SOUND,
+    sound: FA26_SOUND,
+  },
+  {
+    id: "sf26",
+    classId: "f1-2026",
+    title: "SF-26",
+    sub: "2026 年赛车",
+    badge: "SF-26",
+    physics: "f12026-car",
+    modelUrl: "/cars/sf26/model/sf26.glb",
+    sound: SF26_SOUND,
+  },
+  {
+    id: "w17",
+    classId: "f1-2026",
+    title: "W17",
+    sub: "2026 年赛车",
+    badge: "W17",
+    physics: "f12026-car",
+    modelUrl: "/cars/w17/model/w17.glb",
+    sound: W17_SOUND,
+  },
+  {
+    id: "rb22",
+    classId: "f1-2026",
+    title: "RB22",
+    sub: "2026 年赛车",
+    badge: "RB22",
+    physics: "f12026-car",
+    modelUrl: "/cars/rb22/model/rb22.glb",
+    sound: RB22_SOUND,
+  },
+  {
+    id: "sf71h",
+    classId: "f1-2026",
+    title: "SF71H",
+    sub: "2018 年赛车",
+    badge: "SF71H",
+    physics: "f12026-car",
+    modelUrl: "/cars/sf71h/model/sf71h.glb",
+    sound: SF71H_SOUND,
+  },
+  {
+    id: "rb8",
+    classId: "f1-2026",
+    title: "RB8",
+    sub: "2012 年赛车",
+    badge: "RB8",
+    physics: "f12026-car",
+    modelUrl: "/cars/rb8/model/rb8.glb",
+    sound: RB8_SOUND,
+  },
+  {
+    id: "r25",
+    classId: "f1-2026",
+    title: "R25",
+    sub: "2005 年赛车",
+    badge: "R25",
+    physics: "f12026-car",
+    modelUrl: "/cars/r25/model/r25.glb",
+    sound: R25_SOUND,
+  },
+  {
+    id: "f2004",
+    classId: "f1-2026",
+    title: "F2004",
+    sub: "2004 年赛车",
+    badge: "F2004",
+    physics: "f12026-car",
+    modelUrl: "/cars/f2004/model/f2004.glb",
+    sound: F2004_SOUND,
   },
   {
     id: "amg-gt3",
     classId: "gt3",
-    title: "Mercedes-AMG GT3",
-    sub: "GT3 Pro · 6.2L V8 · Multi-stage ABS / TC",
+    title: "梅赛德斯-AMG GT3",
+    sub: "GT3 Pro · 6.2L V8 · 多级 ABS / TC",
     badge: "GT3 PRO",
     physics: "amg-gt3",
     sound: AMG_GT3_SOUND,
+  },
+  {
+    id: "amg-gt3-evo",
+    classId: "gt3",
+    title: "Mercedes-AMG GT3 Evo",
+    sub: "GT3 Evo · AMG GT3 physics · ABS / TC",
+    badge: "GT3 EVO",
+    physics: "amg-gt3",
+    modelUrl: "/cars/amg-gt3-evo/model/amg-gt3-evo.glb",
+    sound: AMG_GT3_SOUND,
+  },
+  {
+    id: "bmw-m4-gt3",
+    classId: "gt3",
+    title: "BMW M4 GT3 Evo",
+    sub: "G82 GT3 Evo · AMG GT3 physics · ABS / TC",
+    badge: "M4 GT3",
+    physics: "amg-gt3",
+    modelUrl: "/cars/bmw-m4-gt3/model/bmw-m4-gt3.glb",
+    sound: BMW_M4_GT3_SOUND,
   },
 ];
 
@@ -74,6 +187,15 @@ export const isCarId = (value: unknown): value is CarId => typeof value === "str
 export const carById = (id: CarId): CarDefinition => BY_ID.get(id) ?? CARS[0];
 
 export const carClass = (id: CarClassId): CarClass => CAR_CLASSES.find((c) => c.id === id) ?? CAR_CLASSES[0];
+
+/**
+ * Whether the livery picker repaints this car. Ported cars (`modelUrl`) keep the paint their GLB was authored
+ * with; the menus show "Factory livery" for them instead of the swatches.
+ */
+export const carTakesLivery = (id: CarId): boolean => !carById(id).modelUrl;
+
+/** Shown in place of the livery swatches for a car that keeps its own paint */
+export const FACTORY_LIVERY_NOTE = "原厂涂装：该赛车保留原厂涂装。";
 
 /** The classes that have cars, in picker order */
 export const carClassesInUse = (): CarClass[] => CAR_CLASSES.filter((k) => CARS.some((c) => c.classId === k.id));

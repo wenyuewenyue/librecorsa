@@ -234,19 +234,16 @@ export function sectorColor(ms: number, best: number | null): string {
 
 /** The last completed sector, for a few seconds after it completes */
 /**
- * True from the moment the car leaves the track until the next lap starts or the run restarts, like the
- * physics' own lap-valid flag: the running clock stays red for the rest of a cut lap, not only while off.
+ * Whether the running lap's clock should show as invalid (crimson). Whole-lap
+ * invalidation was abolished: off-track excursions are penalised by the lap
+ * recorder (+3 s) instead of deleting the lap, so going off track no longer turns
+ * the clock red. Only an explicit physics lapInvalid flag still does — and no
+ * current rule sets one, since invalidateLap is unused.
  */
 export function useLapInvalid(t: CarTelemetry): boolean {
-  // The lap and clock reading when the cut happened; a new lap or a clock that went back clears it
-  const [cut, setCut] = useState<{ lap: number; atMs: number } | null>(null);
-  const stale = cut !== null && (t.lapCount !== cut.lap || t.currentLapTimeMs < cut.atMs);
-  // A physics that judges its own track limits reports the verdict: only a cut that gained time deletes the lap
   const judged = t.lapInvalid !== undefined && t.trackLimits !== undefined;
-  if (!judged && t.offTrack && (cut === null || stale)) setCut({ lap: t.lapCount, atMs: t.currentLapTimeMs });
-  else if (stale && !t.offTrack) setCut(null);
   if (judged) return Boolean(t.lapInvalid);
-  return t.offTrack || (cut !== null && !stale);
+  return false;
 }
 
 export function useSectorFlash(t: CarTelemetry, holdMs = 3500): { sector: number; ms: number; color: string } | null {

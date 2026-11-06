@@ -8,23 +8,23 @@ import { connectedPads } from "@/lib/input/device-input";
 import { LibreCorsaLogo } from "@/components/ui/LibreCorsaLogo";
 
 const TIPS = [
-  "Bugesera sits 1,400 m above sea level: thinner air means less downforce and less drag than you expect.",
-  "Esc opens the garage & telemetry menu at any time: car setup, corner practice, AI races and multiplayer.",
-  "Brake in a straight line, then trail off the pedal as you turn into the apex.",
-  "Press C to cycle cameras: cockpit, T-cam, chase and trackside TV.",
-  "The racing line turns Monza Rosso where you need to brake. Press R to hide it once you know the track.",
-  "On a controller, the slip-angle steering assist keeps the front tyres at their grip limit.",
-  "Hold OVR Boost on the straights; the hybrid battery recharges under braking.",
-  "Switch between FA-26 Formula prototypes and the Mercedes-AMG GT3 from the Garage menu.",
+  "布格塞拉海拔 1400 米：空气稀薄，下压力和阻力都比预想的要小。",
+  "随时按 Esc 打开车库与遥测菜单：赛车调校、弯角练习、AI 竞速和联机。",
+  "直线刹车，入弯时逐渐松开刹车踏板。",
+  "按 C 切换视角：驾驶舱、T-cam、车后追踪和场边转播。",
+  "赛车线在需要刹车的地方会变红。熟悉赛道后按 R 可隐藏它。",
+  "使用手柄时，滑移角转向辅助会让前轮保持在抓地极限。",
+  "直道上按住 OVR 增压；混合动力电池会在刹车时充电。",
+  "在车库菜单中切换 FA-26 方程式原型车与梅赛德斯-AMG GT3。",
 ];
 
 const LIGHTS = 5;
 
 function statusText(t: AssetTask): string {
-  if (t.status === "done") return "READY";
-  if (t.status === "failed") return t.id === "shaders" ? "SKIPPED" : "FALLBACK";
-  if (t.id === "shaders") return t.status === "loading" ? "COMPILING" : "WAITING";
-  if (t.status === "pending") return "QUEUED";
+  if (t.status === "done") return "就绪";
+  if (t.status === "failed") return t.id === "shaders" ? "已跳过" : "备用方案";
+  if (t.id === "shaders") return t.status === "loading" ? "编译中" : "等待中";
+  if (t.status === "pending") return "排队中";
   return `${formatMegabytes(t.loadedBytes)} / ${formatMegabytes(t.totalBytes)} MB`;
 }
 
@@ -47,12 +47,12 @@ function taskFill(t: AssetTask): number | null {
 const ContinuePrompt: React.FC = () => (
   <div className="flex flex-col gap-2">
     <span className="lc-disp lc-breathe text-[24px] text-[#CCFF00] sm:text-[30px]">
-      <span className="pointer-coarse:hidden">Press any key to enter track</span>
-      <span className="hidden pointer-coarse:inline">Tap to enter track</span>
+      <span className="pointer-coarse:hidden">按任意键进入赛道</span>
+      <span className="hidden pointer-coarse:inline">轻触进入赛道</span>
     </span>
     <span className="lc-lbl">
-      <span className="pointer-coarse:hidden">Key · click · Ⓐ or any wheel button</span>
-      <span className="hidden pointer-coarse:inline">Tap · key · Ⓐ or any wheel button</span>
+      <span className="pointer-coarse:hidden">按键 · 点击 · Ⓐ 或方向盘任意按键</span>
+      <span className="hidden pointer-coarse:inline">轻触 · 按键 · Ⓐ 或方向盘任意按键</span>
     </span>
   </div>
 );
@@ -226,12 +226,12 @@ export const LoadingScreen: React.FC<{
                   {Math.round(shown * 100)}%
                 </span>
                 <span className="lc-lbl" style={{ color: ready ? "#CCFF00" : "#8E96AA" }}>
-                  {ready ? "Green track · ready" : "Loading telemetry & mesh"}
+                  {ready ? "赛道就绪 · 可以出发" : "正在加载遥测与网格"}
                 </span>
               </div>
               <div
                 role="img"
-                aria-label={ready ? "Start lights out: ready" : `Start lights: ${litLights} of ${LIGHTS}`}
+                aria-label={ready ? "发车灯熄灭：已就绪" : `发车灯：${litLights} / ${LIGHTS}`}
                 className="mb-2 flex gap-2 rounded-full border border-[#262B3D] bg-[#0D0F15] px-3 py-2.5 sm:mb-[30px] short:mb-2"
               >
                 {Array.from({ length: LIGHTS }, (_, i) => (
@@ -270,7 +270,7 @@ export const LoadingScreen: React.FC<{
               })}
               {progress.anyFailed ? (
                 <p className="pt-2.5 font-f1-mono text-[11px] font-bold text-[#FFB300]">
-                  Some assets did not load; using the built-in geometry instead.
+                  部分素材未能加载；改用内置几何体。
                 </p>
               ) : null}
             </div>
@@ -281,7 +281,7 @@ export const LoadingScreen: React.FC<{
               ) : (
                 <p key={tip} className="m-0 flex items-start gap-3 text-[15px] leading-normal text-[#C5CBD8] sm:text-base">
                   <span className="mt-0.5 shrink-0 rounded-full bg-[#CCFF00] px-[9px] py-[3px] font-f1-mono text-[10px] font-extrabold tracking-[0.1em] text-[#08090D]">
-                    TIP
+                    提示
                   </span>
                   {TIPS[tip]}
                 </p>
@@ -295,7 +295,7 @@ export const LoadingScreen: React.FC<{
               viewBox="-8 -8 116 116"
               className="h-auto w-full overflow-visible"
               role="img"
-              aria-label={`${trackInfo.name} drawing itself as it loads`}
+              aria-label={`${trackInfo.name} 加载中绘制`}
             >
               <path d={outline} fill="none" stroke="#141822" strokeWidth="5.6" strokeLinejoin="round" />
               <path d={outline} fill="none" stroke="#1B1F2B" strokeWidth="1.6" strokeLinejoin="round" />
@@ -354,10 +354,10 @@ export const LoadingScreen: React.FC<{
 
         <footer className="mt-6 flex flex-wrap items-center justify-between gap-2.5 border-t border-[#262B3D] pt-3.5 font-f1-mono text-[11px] font-bold tracking-[0.12em] text-[#8E96AA]">
           <span>
-            {trackInfo.name.toUpperCase()} · {(track.totalLengthM / 1000).toFixed(2)} KM · {TURN_METADATA.length} TURNS
-            {isRwanda ? " · 1,400 M ALTITUDE" : ""}
+            {trackInfo.name.toUpperCase()} · {(track.totalLengthM / 1000).toFixed(2)} KM · {TURN_METADATA.length} 个弯
+            {isRwanda ? " · 海拔 1400 米" : ""}
           </span>
-          <span className="text-[#CCFF00]/80">LIBRECORSA · 500HZ VEHICLE DYNAMICS</span>
+          <span className="text-[#CCFF00]/80">WY赛车 · 500HZ 车辆动力学</span>
         </footer>
       </div>
 

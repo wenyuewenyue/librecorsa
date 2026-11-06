@@ -101,7 +101,7 @@ export const PedalBars: React.FC<{
   const w = full ? 12 : 7;
   const hasFfb = showFfb && t.ffbTorqueNorm !== undefined;
   return (
-    <div className={`flex flex-col gap-1.5 ${className}`} aria-label="Pedals and electronics">
+    <div className={`flex flex-col gap-1.5 ${className}`} aria-label="踏板与电子系统">
       <div className={`flex items-end ${full ? "gap-2" : "gap-[5px]"}`}>
         {showClutch ? <Bar label="CLU" demand={p.clutch} color={CLUTCH_COLOR} h={h} w={w} showLabel={full} /> : null}
         <Bar label="ABS" demand={p.brake} output={p.brakeOut} color={HUD_RED} cutColor={ABS_COLOR} active={p.absActive} h={h} w={w} showLabel={full} />
@@ -109,7 +109,7 @@ export const PedalBars: React.FC<{
         {hasFfb ? <Bar label="FFB" demand={p.ffb} color={p.ffbClip ? HUD_RED : "#C5CBD8"} clip={p.ffbClip} h={h} w={w} showLabel={full} /> : null}
       </div>
       {full ? (
-        <span className="relative h-[5px] w-full overflow-hidden rounded-full bg-white/[0.07]" aria-label="Steering">
+        <span className="relative h-[5px] w-full overflow-hidden rounded-full bg-white/[0.07]" aria-label="转向">
           <span className="absolute inset-y-0 left-1/2 w-px bg-[#F5F7FA]/40" />
           <span
             className="absolute inset-y-0 rounded-full"
@@ -132,7 +132,7 @@ export const PedalCard: React.FC<{ t: CarTelemetry; className?: string }> = ({ t
   const absPct = Math.round((p.brake - p.brakeOut) * 100);
   const [fl, fr, rl, rr] = p.absPerWheel;
   return (
-    <section aria-label="Pedals" className={`flex items-center gap-3 ${className}`}>
+    <section aria-label="踏板" className={`flex items-center gap-3 ${className}`}>
       <PedalBars t={t} size="full" />
       <div className="flex min-w-[68px] flex-col gap-1 font-f1-mono text-[10px] font-extrabold tabular-nums">
         <span className="flex justify-between gap-2" style={{ color: p.tcActive ? TC_COLOR : "#5B6275" }}>
@@ -142,7 +142,7 @@ export const PedalCard: React.FC<{ t: CarTelemetry; className?: string }> = ({ t
         <span className="flex items-center justify-between gap-1.5" style={{ color: p.absActive ? ABS_COLOR : "#5B6275" }}>
           <span className="inline-flex items-center gap-1">
             <span>ABS</span>
-            <span className="grid grid-cols-2 gap-[2px]" aria-label="4-channel ABS wheel activity">
+            <span className="grid grid-cols-2 gap-[2px]" aria-label="四通道 ABS 车轮活动">
               {[fl, fr, rl, rr].map((cut, idx) => (
                 <span
                   key={idx}
@@ -158,8 +158,8 @@ export const PedalCard: React.FC<{ t: CarTelemetry; className?: string }> = ({ t
           <span>−{absPct}%</span>
         </span>
         <span className="flex justify-between gap-2" style={{ color: p.ffbClip ? HUD_RED : "#5B6275" }}>
-          <span>CLIP</span>
-          <span>{p.ffbClip ? "ON" : "—"}</span>
+          <span>削波</span>
+          <span>{p.ffbClip ? "开启" : "—"}</span>
         </span>
       </div>
     </section>

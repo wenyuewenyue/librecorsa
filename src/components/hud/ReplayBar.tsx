@@ -59,6 +59,12 @@ export const ReplayBar: React.FC<{
         return;
       }
       if (e.ctrlKey || e.metaKey || e.altKey) return;
+      // Browser keys the simulator shield also blocks; repeated here so the
+      // replay bar itself never scrolls the page or moves focus while scrubbing.
+      if (e.code === "Tab" || e.code === "Backspace" || e.code === "Slash") {
+        e.preventDefault();
+        return;
+      }
       if (e.code === "Space" || e.key === " ") {
         e.preventDefault();
         onTogglePlay();
@@ -90,15 +96,15 @@ export const ReplayBar: React.FC<{
       <div aria-hidden className="pointer-events-none fixed inset-x-0 bottom-0 z-[-1] h-10 bg-black sm:h-14 short:h-6" />
 
       <section
-        aria-label="Replay controls"
+        aria-label="回放控制"
         className="pointer-events-auto fixed bottom-14 left-1/2 z-40 flex w-[min(820px,calc(100vw-2rem))] -translate-x-1/2 flex-col gap-2.5 rounded-[28px] border border-white/8 bg-[#08090D]/80 px-4 py-3.5 text-[#F5F7FA] shadow-[0_20px_60px_rgba(0,0,0,0.6)] backdrop-blur-[16px] sm:bottom-[76px] short:bottom-3 short:gap-2 short:py-2.5"
       >
         <div className="flex items-center gap-3.5">
           <button
             type="button"
             onClick={onTogglePlay}
-            aria-label={playing ? "Pause replay" : "Play replay"}
-            title="Play / pause (Space)"
+            aria-label={playing ? "暂停回放" : "播放回放"}
+            title="播放 / 暂停（空格）"
             className="inline-flex h-[52px] w-[52px] shrink-0 cursor-pointer items-center justify-center rounded-full bg-[#CCFF00] text-[#08090D] shadow-[0_0_0_5px_rgba(204,255,0,0.12)] transition-colors hover:bg-[#d9ff33] short:h-11 short:w-11"
           >
             {playing ? <Pause size={20} fill="currentColor" strokeWidth={0} /> : <Play size={20} fill="currentColor" strokeWidth={0} />}
@@ -106,12 +112,12 @@ export const ReplayBar: React.FC<{
 
           <label className="flex min-w-[120px] flex-1 flex-col gap-2">
             <span className="flex justify-between font-f1-mono text-[10px] font-extrabold tracking-[0.14em] text-[#8E96AA]">
-              <span>BUFFER</span>
-              <span>LIVE</span>
+              <span>缓存</span>
+              <span>实时</span>
             </span>
             <input
               type="range"
-              aria-label="Replay position"
+              aria-label="回放位置"
               min={startS}
               max={endS}
               step={0.01}
@@ -128,7 +134,7 @@ export const ReplayBar: React.FC<{
         <div className="flex flex-wrap items-center justify-between gap-2.5">
           <div
             role="group"
-            aria-label="Playback speed"
+            aria-label="播放速度"
             className="flex rounded-full border border-[#262B3D] bg-[#08090D] p-1"
           >
             {SPEEDS.map((s) => (
@@ -149,7 +155,7 @@ export const ReplayBar: React.FC<{
           </div>
 
           <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={onCycleCamera} title="Cycle replay camera" className={ctrlClass}>
+            <button type="button" onClick={onCycleCamera} title="切换回放视角" className={ctrlClass}>
               <Camera size={16} aria-hidden />
               {cameraLabel}
             </button>
@@ -158,11 +164,11 @@ export const ReplayBar: React.FC<{
               <button
                 type="button"
                 onClick={onFlashback}
-                title="Flashback — resume driving from this moment (F)"
+                title="即时回放——从此刻恢复驾驶，免费且本圈正常计入（F）"
                 className="inline-flex h-10 shrink-0 cursor-pointer items-center justify-center gap-2 rounded-full border border-[#CCFF00]/60 bg-[#CCFF00]/15 px-3.5 text-[13px] font-bold whitespace-nowrap text-[#CCFF00] transition-colors hover:bg-[#CCFF00] hover:text-[#08090D]"
               >
                 <RotateCcw size={15} aria-hidden />
-                Flashback
+                即时回放
                 <span className="inline-flex h-[22px] min-w-[22px] items-center justify-center rounded-full border border-current/40 bg-[#08090D]/60 px-1.5 font-f1-mono text-[10px] font-extrabold">
                   F
                 </span>
@@ -170,7 +176,7 @@ export const ReplayBar: React.FC<{
             ) : null}
 
             <button type="button" onClick={onExit} className={ctrlClass}>
-              Exit
+              退出
               <span className="inline-flex h-[22px] min-w-[22px] items-center justify-center rounded-full border border-[#3A4157] bg-[#08090D] px-1.5 font-f1-mono text-[10px] font-extrabold">
                 {exitKeyLabel}
               </span>
@@ -183,9 +189,9 @@ export const ReplayBar: React.FC<{
         aria-hidden
         className="pointer-events-none fixed bottom-[18px] left-1/2 z-40 hidden -translate-x-1/2 gap-[18px] font-f1-mono text-[11px] font-bold tracking-[0.1em] whitespace-nowrap text-[#8E96AA] sm:flex pointer-coarse:hidden short:hidden"
       >
-        <span>SPACE PLAY / PAUSE</span>
-        <span>← → SEEK {SEEK_STEP_S} S</span>
-        {onFlashback ? <span>F FLASHBACK</span> : null}
+        <span>空格 播放 / 暂停</span>
+        <span>← → 快进/快退 {SEEK_STEP_S} 秒</span>
+        {onFlashback ? <span>F 即时回放（免费）</span> : null}
       </div>
     </>
   );

@@ -35,12 +35,12 @@ export const KeyboardStep: React.FC<SetupStepProps> = ({ settings, onChangeSetti
         return;
       }
       if (RESERVED_CODES.has(e.code)) {
-        setNotice(`${keyLabel(e.code)} is reserved`);
+        setNotice(`${keyLabel(e.code)} 已被保留`);
         return;
       }
       const owner = KEY_ACTIONS.find((a) => settings.keys[a.id].includes(e.code) && a.id !== capture.action);
       onChangeSettings((s) => ({ ...s, keys: rebindKey(s.keys, capture.action, capture.slot, e.code) }));
-      setNotice(owner ? `${keyLabel(e.code)} moved from ${owner.label}` : null);
+      setNotice(owner ? `${keyLabel(e.code)} 已从 ${owner.label} 移出` : null);
       setCapture(null);
     };
     window.addEventListener("keydown", onKey, { capture: true });
@@ -59,8 +59,8 @@ export const KeyboardStep: React.FC<SetupStepProps> = ({ settings, onChangeSetti
   return (
     <div className="flex flex-col gap-4">
       <SetupCard
-        label="Key bindings"
-        action={<PillAction onClick={() => onChangeSettings((s) => ({ ...s, keys: DEFAULT_KEY_BINDINGS }))}>Reset</PillAction>}
+        label="按键绑定"
+        action={<PillAction onClick={() => onChangeSettings((s) => ({ ...s, keys: DEFAULT_KEY_BINDINGS }))}>重置</PillAction>}
       >
         <AutoGrid min={330} className="gap-x-[18px] gap-y-0.5">
           {KEY_ACTIONS.map(({ id, label }) => {
@@ -76,19 +76,19 @@ export const KeyboardStep: React.FC<SetupStepProps> = ({ settings, onChangeSetti
                       <span key={slot} className="group relative">
                         <button
                           type="button"
-                          aria-label={code || listening ? undefined : `Add a key for ${label}`}
+                          aria-label={code || listening ? undefined : `为 ${label} 添加按键`}
                           onClick={() => {
                             setNotice(null);
                             setCapture({ action: id, slot: Math.min(slot, codes.length) });
                           }}
                           className={bindKeyClass(listening ? "listening" : code ? "bound" : "empty")}
                         >
-                          {listening ? "PRESS…" : code ? keyLabel(code) : "+"}
+                          {listening ? "按下…" : code ? keyLabel(code) : "+"}
                         </button>
                         {code && !listening ? (
                           <button
                             type="button"
-                            aria-label={`Unbind ${keyLabel(code)}`}
+                            aria-label={`解除绑定 ${keyLabel(code)}`}
                             onClick={() => onChangeSettings((s) => ({ ...s, keys: clearKey(s.keys, id, slot) }))}
                             className="absolute -top-1.5 -right-1.5 hidden h-[18px] w-[18px] cursor-pointer items-center justify-center rounded-full border border-[#08090D] bg-[#3A4157] text-[11px] leading-none text-[#F5F7FA] group-hover:flex hover:bg-[#FF2A3C]"
                           >
@@ -104,84 +104,84 @@ export const KeyboardStep: React.FC<SetupStepProps> = ({ settings, onChangeSetti
           })}
         </AutoGrid>
         <StatusPill tone={capture ? "live" : notice ? "info" : "idle"}>
-          {capture ? "Press a key · Esc cancels" : (notice ?? "Esc always opens the menu.")}
+          {capture ? "按一个按键 · Esc 取消" : (notice ?? "Esc 始终打开菜单。")}
         </StatusPill>
       </SetupCard>
 
       <SetupCard
-        label="Keyboard feel"
+        label="键盘手感"
         action={
           <PillAction onClick={() => onChangeSettings((s) => ({ ...s, keyboardTuning: DEFAULT_KEYBOARD_TUNING }))}>
-            Reset
+            重置
           </PillAction>
         }
       >
         <AutoGrid min={220} className="gap-x-[22px] gap-y-3">
           <TuningSlider
-            label="Throttle rise"
+            label="油门上升"
             value={tuning.throttleRiseS}
             min={0}
             max={1}
             step={0.01}
             format={ms}
-            hint="Time for the throttle key to reach full throttle"
+            hint="油门按键达到全油门所需时间"
             onChange={(v) => setTuning({ throttleRiseS: v })}
           />
           <TuningSlider
-            label="Brake rise"
+            label="刹车上升"
             value={tuning.brakeRiseS}
             min={0}
             max={1}
             step={0.01}
             format={ms}
-            hint="Time for the brake key to reach full brake"
+            hint="刹车按键达到全刹车所需时间"
             onChange={(v) => setTuning({ brakeRiseS: v })}
           />
           <TuningSlider
-            label="Steering rise"
+            label="转向上升"
             value={tuning.steerRiseS}
             min={0.05}
             max={1}
             step={0.01}
             format={ms}
-            hint="Time to steer from centre to the speed's lock"
+            hint="从中心转到当前速度下最大转向角所需时间"
             onChange={(v) => setTuning({ steerRiseS: v })}
           />
           <TuningSlider
-            label="Steering return"
+            label="转向回正"
             value={tuning.steerReturnS}
             min={0.05}
             max={1}
             step={0.01}
             format={ms}
-            hint="Time for the wheel to centre after the key is let go"
+            hint="松开按键后方向盘回正所需时间"
             onChange={(v) => setTuning({ steerReturnS: v })}
           />
           <TuningSlider
-            label="Half throttle"
+            label="半油门"
             value={tuning.halfThrottle}
             min={0.2}
             max={0.9}
             step={0.01}
             format={(v) => `${Math.round(v * 100)} %`}
-            hint="Throttle while the Half throttle key is held with throttle"
+            hint="按住半油门键同时踩油门时的油门量"
             onChange={(v) => setTuning({ halfThrottle: v })}
           />
         </AutoGrid>
         <div className="border-t border-[#262B3D] pt-2.5">
           <Toggle
-            label="Corner-exit throttle assist"
-            detail="Eases the throttle in while the rear tyres are at their limit"
+            label="出弯油门辅助"
+            detail="后轮处于极限时平顺地给油"
             checked={tuning.exitAssist}
             onChange={() => setTuning({ exitAssist: !tuning.exitAssist })}
           />
         </div>
       </SetupCard>
 
-      <SetupCard ariaLabel="Mouse steering">
+      <SetupCard ariaLabel="鼠标转向">
         <Toggle
-          label="Mouse steering"
-          detail="Steer with the mouse across the screen; throttle and brake stay on the keys"
+          label="鼠标转向"
+          detail="用鼠标在屏幕上转向；油门和刹车仍用按键"
           checked={mouseSteerEnabled}
           onChange={() => onSetMouseSteer(!mouseSteerEnabled)}
         />

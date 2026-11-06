@@ -23,9 +23,9 @@ function formatRaceTime(totalS: number): string {
 /** Time / gap column: winner's total time, "+12.345", "+1 LAP" / "+n LAPS", RUNNING or DNF */
 function timeOrGap(r: RaceResultEntry, resultsFinal: boolean): string {
   if (r.dnf) return "DNF";
-  if (r.finishTimeS === null) return resultsFinal ? "DNF" : "RUNNING";
+  if (r.finishTimeS === null) return resultsFinal ? "DNF" : "进行中";
   if (r.position === 1) return formatRaceTime(r.finishTimeS);
-  if (r.lapsDown > 0) return r.lapsDown === 1 ? "+1 LAP" : `+${r.lapsDown} LAPS`;
+  if (r.lapsDown > 0) return r.lapsDown === 1 ? "+1 圈" : `+${r.lapsDown} 圈`;
   if (r.gapS !== null) return `+${r.gapS.toFixed(3)}`;
   return formatRaceTime(r.finishTimeS);
 }
@@ -42,11 +42,11 @@ function timeColor(r: RaceResultEntry): string {
 /** "+3s" pill: time penalties already added to the race time */
 const PenaltyBadge: React.FC<{ seconds: number; className?: string }> = ({ seconds, className = "mr-2" }) => (
   <span
-    title={`${seconds.toFixed(1)} s of time penalties (track limits), included in the time`}
+    title={`${seconds.toFixed(1)} 秒计时罚时（赛道限制），已计入成绩`}
     className={`inline-flex h-[18px] items-center rounded-full px-1.5 align-[1px] font-f1-mono text-[9px] font-extrabold tracking-[0.06em] ${className}`}
     style={{ backgroundColor: HUD_RED, color: "#F5F7FA" }}
   >
-    +{seconds % 1 === 0 ? seconds.toFixed(0) : seconds.toFixed(1)}s PEN
+    +{seconds % 1 === 0 ? seconds.toFixed(0) : seconds.toFixed(1)}s 罚时
   </span>
 );
 
@@ -101,13 +101,13 @@ const PodiumStep: React.FC<{
       </span>
       <span className={`truncate font-bold ${p1 ? "text-[19px]" : "text-[17px]"}`}>
         {r.name}
-        {r.isPlayer ? <span className="text-[12px] text-[#CCFF00]"> · you</span> : null}
+        {r.isPlayer ? <span className="text-[12px] text-[#CCFF00]"> · 你</span> : null}
       </span>
       <span className={`lc-data ${p1 ? "text-[18px]" : "text-[15px]"}`} style={{ color: timeColor(r) }}>
         {text}
       </span>
       <span className="lc-data text-[11px] text-[#8E96AA]">
-        BEST <span style={{ color: fastest ? HUD_PURPLE : undefined }}>{formatLapTime(r.bestLapMs)}</span>
+        最佳 <span style={{ color: fastest ? HUD_PURPLE : undefined }}>{formatLapTime(r.bestLapMs)}</span>
         {r.penaltyS ? <PenaltyBadge seconds={r.penaltyS} className="ml-2" /> : null}
       </span>
     </div>
@@ -136,6 +136,23 @@ export const RaceResults: React.FC<{
     if (!results) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
+      // Post-race dialog: stop page scroll/back on Space/Arrows/Backspace
+      // when the key did not land on a control. Buttons keep Enter (and
+      // mouse/touch) activation; Space on a focused button is left alone
+      // here because the simulator shield already handles it while driving.
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "BUTTON" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (e.code === "Space" || e.code === "ArrowUp" || e.code === "ArrowDown" || e.code === "ArrowLeft" || e.code === "ArrowRight" || e.code === "Backspace") {
+        e.preventDefault();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -159,7 +176,7 @@ export const RaceResults: React.FC<{
         ref={rootRef}
         role="dialog"
         aria-modal="true"
-        aria-label="Race result"
+        aria-label="比赛结果"
         className="pointer-events-auto flex max-h-[calc(100dvh-2rem)] w-full max-w-[760px] flex-col gap-[18px] overflow-hidden rounded-[30px] border border-white/8 bg-[#0A0B10]/92 px-[26px] pt-6 pb-[22px] text-[#F5F7FA] shadow-[0_40px_100px_rgba(0,0,0,0.65)] backdrop-blur-[20px] short:gap-3 short:px-4 short:pt-4 short:pb-3"
       >
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -171,7 +188,7 @@ export const RaceResults: React.FC<{
             />
             <div className="flex min-w-0 flex-col gap-1">
               <span className="lc-lbl !text-[9px] !font-extrabold !tracking-[0.18em]">
-                Race result{race.totalLaps ? ` · ${race.totalLaps} laps` : ""}
+                比赛结果{race.totalLaps ? ` · ${race.totalLaps} 圈` : ""}
               </span>
               <h1 className="lc-disp m-0 truncate text-[24px] sm:text-[30px]">{trackName}</h1>
             </div>
@@ -181,9 +198,9 @@ export const RaceResults: React.FC<{
             <span
               className="lc-data inline-flex h-7 items-center rounded-full px-3 text-[11px] tracking-[0.1em]"
               style={{ boxShadow: `inset 0 0 0 1px ${HUD_YELLOW}`, color: HUD_YELLOW }}
-              title="Track-limits strikes: every third is a time penalty"
+              title="赛道限制警告：每三次计一次计时罚时"
             >
-              TRACK LIMITS ×{trackLimitStrikes}
+              赛道限制 ×{trackLimitStrikes}
             </span>
           ) : null}
           <span
@@ -194,7 +211,7 @@ export const RaceResults: React.FC<{
                 : { boxShadow: `inset 0 0 0 1px ${HUD_YELLOW}`, color: HUD_YELLOW }
             }
           >
-            {final ? "FINAL" : "PROVISIONAL"}
+            {final ? "最终" : "暂定"}
           </span>
           </span>
         </div>
@@ -211,16 +228,16 @@ export const RaceResults: React.FC<{
             )}
           </div>
 
-          <table className="w-full border-collapse text-left" aria-label="Full classification">
+          <table className="w-full border-collapse text-left" aria-label="完整排名">
             <thead className="sticky top-0 z-[1] bg-[#0A0B10]">
               <tr>
-                <th className={`${TH} w-10`}>Pos</th>
+                <th className={`${TH} w-10`}>名次</th>
                 <th className="w-2 p-0" />
-                <th className={TH}>Code</th>
-                <th className={TH}>Name</th>
-                <th className={`${TH} text-right`}>Laps</th>
-                <th className={`${TH} text-right`}>Time / gap</th>
-                <th className={`${TH} text-right`}>Best lap</th>
+                <th className={TH}>代号</th>
+                <th className={TH}>姓名</th>
+                <th className={`${TH} text-right`}>圈数</th>
+                <th className={`${TH} text-right`}>时间 / 差距</th>
+                <th className={`${TH} text-right`}>最佳圈</th>
               </tr>
             </thead>
             <tbody>
@@ -267,8 +284,8 @@ export const RaceResults: React.FC<{
           <PromptBar
             className="mr-auto"
             prompts={[
-              { action: "select", label: "Select" },
-              { action: "back", label: "Close" },
+              { action: "select", label: "选择" },
+              { action: "back", label: "关闭" },
             ]}
           />
           <div className="flex flex-wrap gap-2">
@@ -279,7 +296,7 @@ export const RaceResults: React.FC<{
                 className={`${BUTTON_BASE} border-0 bg-[#CCFF00] text-[#08090D] hover:bg-[#d9ff33]`}
               >
                 <RotateCcw className="h-4 w-4" strokeWidth={2.6} aria-hidden />
-                Restart race
+                重开比赛
               </button>
             ) : null}
             {onBackToLobby ? (
@@ -288,7 +305,7 @@ export const RaceResults: React.FC<{
                 onClick={onBackToLobby}
                 className={`${BUTTON_BASE} border border-[#00E5FF]/50 bg-[#00E5FF]/8 text-[#00E5FF] hover:bg-[#00E5FF]/15`}
               >
-                Back to lobby
+                返回大厅
               </button>
             ) : null}
             <button
@@ -296,7 +313,7 @@ export const RaceResults: React.FC<{
               onClick={onClose}
               className={`${BUTTON_BASE} border border-[#262B3D] bg-[#1B1F2B] text-[#F5F7FA] hover:border-[#3A4157] hover:bg-[#262B3D]`}
             >
-              Close
+              关闭
             </button>
           </div>
         </div>

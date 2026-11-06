@@ -34,9 +34,9 @@ const DEVICES: {
   detail: string;
   icon: React.ComponentType<{ className?: string; strokeWidth?: number }>;
 }[] = [
-  { id: "keyboard", title: "Keyboard", detail: "Arrows / WASD with smoothed steering. Rebind any key.", icon: Keyboard },
-  { id: "controller", title: "Controller", detail: "Xbox, PlayStation and other pads, with a steering assist.", icon: Gamepad2 },
-  { id: "wheel", title: "Wheel", detail: "Direct drive or belt / gear wheels with pedals. Calibrated 1:1.", icon: WheelIcon },
+  { id: "keyboard", title: "键盘", detail: "方向键 / WASD，带平滑转向。可重新绑定任意按键。", icon: Keyboard },
+  { id: "controller", title: "手柄", detail: "Xbox、PlayStation 及其他手柄，带转向辅助。", icon: Gamepad2 },
+  { id: "wheel", title: "方向盘", detail: "直驱或皮带 / 齿轮方向盘，带踏板。1:1 校准。", icon: WheelIcon },
 ];
 
 /** Step 1: how the player drives. A connected controller or wheel is detected and preselected. */
@@ -98,7 +98,7 @@ export const DeviceStep: React.FC<SetupStepProps & { autoDetect: boolean }> = ({
                     <span className="lc-ping absolute inset-0 rounded-full bg-[#08090D]" />
                     <span className="relative h-1.5 w-1.5 rounded-full bg-[#08090D]" />
                   </span>
-                  DETECTED
+                  已检测到
                 </span>
               ) : null}
               {active ? (
@@ -114,11 +114,10 @@ export const DeviceStep: React.FC<SetupStepProps & { autoDetect: boolean }> = ({
         })}
       </div>
 
-      <SetupCard label="Connected devices" className="gap-3!">
+      <SetupCard label="已连接设备" className="gap-3!">
         {pads.length === 0 ? (
           <Hint className="text-[14px]!">
-            None yet. Browsers only show a controller or wheel after you press one of its buttons, so press any
-            button now.
+            暂无。浏览器只有在你按下手柄或方向盘的按键后才会显示它，请现在按任意按键。
           </Hint>
         ) : (
           <ul className="flex flex-col gap-2">
@@ -138,10 +137,10 @@ export const DeviceStep: React.FC<SetupStepProps & { autoDetect: boolean }> = ({
                     </span>
                     <span className="flex shrink-0 items-center gap-3">
                       <span className="font-f1-mono text-[11px] font-bold tracking-[0.1em] text-[#8E96AA]">
-                        {isLikelyWheel(p) ? "WHEEL / PEDALS" : "CONTROLLER"} · {p.axes.length} AXES · {p.buttons.length} BUTTONS
+                        {isLikelyWheel(p) ? "方向盘 / 踏板" : "手柄"} · {p.axes.length} 轴 · {p.buttons.length} 按键
                       </span>
                       {mappable ? (
-                        <PillAction onClick={() => setMapFor(open ? null : p.id)}>{open ? "Hide map" : "Button map"}</PillAction>
+                        <PillAction onClick={() => setMapFor(open ? null : p.id)}>{open ? "隐藏按键图" : "按键图"}</PillAction>
                       ) : null}
                     </span>
                   </div>

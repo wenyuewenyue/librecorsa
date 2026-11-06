@@ -102,7 +102,7 @@ export const PhoneHud: React.FC<HudDesignProps> = ({ t, deltaS, map, revRange, s
         className="absolute w-[176px] landscape:w-[196px]"
         style={{ top: inset("top", 12), right: inset("right", 12), ...anchor(scale, "top right") }}
       >
-        <section aria-label="Timing" className={`flex flex-col gap-1.5 rounded-[20px] px-3 pt-2 pb-2.5 ${HUD_GLASS}`}>
+        <section aria-label="计时" className={`flex flex-col gap-1.5 rounded-[20px] px-3 pt-2 pb-2.5 ${HUD_GLASS}`}>
           <div className="flex items-baseline justify-between gap-2">
             {race ? (
               <span className="lc-disp text-[26px] leading-none text-[#F5F7FA]">
@@ -110,7 +110,7 @@ export const PhoneHud: React.FC<HudDesignProps> = ({ t, deltaS, map, revRange, s
                 <span className="text-[16px] text-[#8E96AA]">/{race.standings.length}</span>
               </span>
             ) : (
-              <span className="lc-disp text-[22px] leading-none text-[#F5F7FA]">Lap {Math.max(1, t.lapCount)}</span>
+              <span className="lc-disp text-[22px] leading-none text-[#F5F7FA]">第 {Math.max(1, t.lapCount)} 圈</span>
             )}
             {race ? (
               <span className={HUD_LBL}>
@@ -131,7 +131,7 @@ export const PhoneHud: React.FC<HudDesignProps> = ({ t, deltaS, map, revRange, s
             </span>
           </div>
           <span className={`${HUD_LBL} flex justify-between`}>
-            Best <span className="text-[#B845FF] tabular-nums">{formatLapTime(t.bestLapTimeMs)}</span>
+            最佳 <span className="text-[#B845FF] tabular-nums">{formatLapTime(t.bestLapTimeMs)}</span>
           </span>
         </section>
       </div>

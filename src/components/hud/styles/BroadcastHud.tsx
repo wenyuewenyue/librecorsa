@@ -19,7 +19,7 @@ export const BroadcastTower: React.FC<{
 }> = ({ t, trackCode = "LC", className = "", lapInvalid = t.offTrack, gaps }) => {
   const race = t.race;
   return (
-    <section aria-label={race ? "Timing tower" : "Session"} className={`w-full overflow-hidden rounded-[20px] ${HUD_GLASS} ${className}`}>
+    <section aria-label={race ? "计时塔" : "会话"} className={`w-full overflow-hidden rounded-[20px] ${HUD_GLASS} ${className}`}>
       <div className="flex h-11 items-center gap-2.5 rounded-[20px_20px_14px_14px] bg-[#F5F7FA] pr-3 pl-2 text-[#08090D]">
         <LibreCorsaMark className="h-7 w-7 shrink-0" />
         <div className="lc-disp flex-1 truncate text-[18px]">
@@ -30,7 +30,7 @@ export const BroadcastTower: React.FC<{
             </>
           ) : (
             <>
-              Practice <span className="opacity-45">· Lap {Math.max(1, t.lapCount)}</span>
+              练习 <span className="opacity-45">· 第 {Math.max(1, t.lapCount)} 圈</span>
             </>
           )}
         </div>
@@ -63,10 +63,10 @@ export const BroadcastTower: React.FC<{
           </div>
           <div className="lc-data mt-2 flex justify-between gap-2 text-[11px]">
             <span className="text-[#8E96AA]">
-              BEST <span className="text-[#B845FF]">{formatLapTime(t.bestLapTimeMs)}</span>
+              最佳 <span className="text-[#B845FF]">{formatLapTime(t.bestLapTimeMs)}</span>
             </span>
             <span className="text-[#8E96AA]">
-              LAST <span className="text-[#F5F7FA]">{formatLapTime(t.lastLapTimeMs)}</span>
+              上一圈 <span className="text-[#F5F7FA]">{formatLapTime(t.lastLapTimeMs)}</span>
             </span>
           </div>
         </div>
@@ -77,12 +77,12 @@ export const BroadcastTower: React.FC<{
 
 /** Circuit map card with the sector and the corner you are in. Fills its parent's width. */
 export const BroadcastMap: React.FC<Pick<HudDesignProps, "t" | "map" | "mapMode">> = ({ t, map, mapMode = "full" }) => (
-  <section aria-label="Circuit map" className={`w-full rounded-[22px] px-3.5 py-3 ${HUD_GLASS}`}>
+  <section aria-label="赛道图" className={`w-full rounded-[22px] px-3.5 py-3 ${HUD_GLASS}`}>
     <MiniMap map={map} t={t} sectors local={mapMode === "local"} className={`block w-full ${mapMode === "local" ? "h-[180px]" : "h-[140px]"}`} stroke={22} />
     <div className="mt-1.5 flex items-center justify-between font-f1-mono text-[10px] font-extrabold tracking-[0.16em] text-[#8E96AA] uppercase">
-      <span className="shrink-0">Sector {t.currentSector}</span>
+      <span className="shrink-0">第 {t.currentSector} 分段</span>
       <span className="truncate pl-2 text-[#F5F7FA]">
-        {t.currentTurnNumber ? `T${t.currentTurnNumber} ${t.currentTurnName}` : "Straight"}
+        {t.currentTurnNumber ? `T${t.currentTurnNumber} ${t.currentTurnName}` : "直道"}
       </span>
     </div>
   </section>
@@ -135,7 +135,7 @@ export const BroadcastHud: React.FC<HudDesignProps> = ({ t, deltaS, map, compoun
           <div
             className={`inline-flex h-[30px] items-center gap-2.5 rounded-full px-4 font-f1-mono text-[11px] font-extrabold tracking-[0.12em] text-[#8E96AA] ${HUD_GLASS}`}
           >
-            <span className="text-[#F5F7FA]">P{race!.position}</span> CHASING
+            <span className="text-[#F5F7FA]">P{race!.position}</span> 追赶
             <span style={{ color: ahead.teamColorHex }}>{ahead.driverCode}</span>
             <span className="text-[#F5F7FA] tabular-nums">{(me.gapToLeaderS - ahead.gapToLeaderS).toFixed(3)}s</span>
           </div>
@@ -162,7 +162,7 @@ export const BroadcastHud: React.FC<HudDesignProps> = ({ t, deltaS, map, compoun
               >
                 {compound[0]}
               </span>
-              <span className="grid grid-cols-[repeat(2,15px)] gap-[3px]" aria-label="Tyre temperatures, inner / middle / outer">
+              <span className="grid grid-cols-[repeat(2,15px)] gap-[3px]" aria-label="轮胎温度，内 / 中 / 外">
                 {t.tireTempsC.map((c, i) => {
                   const bands = t.tireBandTempsC?.[i] ?? [c, c, c];
                   const flagged = (t.tireGrainLevel?.[i] ?? 0) > 0.12 || (t.tireBlisterLevel?.[i] ?? 0) > 0.12 || (t.tireFlatSpotSeverity?.[i] ?? 0) > 0.12;
@@ -226,7 +226,7 @@ export const BroadcastHud: React.FC<HudDesignProps> = ({ t, deltaS, map, compoun
               ) : t.fuelKg > 0 ? (
                 <>
                   <span className="flex items-center gap-1.5 font-f1-mono text-[11px] font-extrabold tracking-[0.12em] text-[#8E96AA]">
-                    <Fuel aria-hidden className="h-3 w-3" /> FUEL
+                    <Fuel aria-hidden className="h-3 w-3" /> 燃油
                   </span>
                   <span className="lc-data text-[18px] leading-none whitespace-nowrap text-[#F5F7FA]">{t.fuelKg.toFixed(1)} kg</span>
                 </>
@@ -244,7 +244,7 @@ export const BroadcastHud: React.FC<HudDesignProps> = ({ t, deltaS, map, compoun
                 deltaS === null ? "bg-[#1B1F2B] text-[#8E96AA]" : deltaS <= 0 ? "bg-[#00E676] text-[#08090D]" : "bg-[#FF2A3C] text-[#08090D]"
               }`}
             >
-              <span className="font-f1-mono text-[9px] font-extrabold tracking-[0.18em] opacity-70">DELTA</span>
+              <span className="font-f1-mono text-[9px] font-extrabold tracking-[0.18em] opacity-70">差距</span>
               <span className="lc-data text-[24px] leading-none whitespace-nowrap tabular-nums">
                 {deltaS === null ? "--.---" : formatDelta(Math.max(-99.999, Math.min(99.999, deltaS)))}
               </span>

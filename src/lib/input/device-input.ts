@@ -72,6 +72,11 @@ export interface WheelSettings {
   ffbFilterS: number;
   /** Strength per car (gain, minimum force) set from the FFB panel; a car without one uses ffbGain / ffbMinForce */
   ffbPerCar: Partial<Record<string, { gain: number; minForce: number }>>;
+  /**
+   * Steering-wheel lock to lock (deg) per vehicle model, for a quicker rack than the real car's: full lock comes this
+   * far round the rim. A car without one steers 1:1 with its real lock (`CAR_WHEEL_LOCKS_DEG`)
+   */
+  steerLockPerCar: Partial<Record<string, number>>;
   /** Experimental: drive a HID PID (direct-drive) wheel straight from the browser over WebHID, no bridge */
   hidFfb: boolean;
   /** Stream telemetry over UDP through the bridge (SimHub, bass shakers, dashboards) */
@@ -91,9 +96,17 @@ export const CAR_WHEEL_LOCKS_DEG: Readonly<Record<string, number>> = {
   "amg-gt3": 640,
 };
 
-/** Real steering-wheel lock-to-lock rotation (degrees) for a given vehicle model */
-export function carWheelLockDeg(vehicle?: string): number {
-  return (vehicle && CAR_WHEEL_LOCKS_DEG[vehicle]) || CAR_WHEEL_LOCK_DEG;
+/** Range of a player-set steering lock (deg, lock to lock): never slower than the real car's */
+export const STEER_LOCK_MIN_DEG = 180;
+
+/**
+ * Steering-wheel lock-to-lock rotation (degrees) for a vehicle model: the player's own lock for it when set (and
+ * quicker than the real car's), else the real car's
+ */
+export function carWheelLockDeg(vehicle?: string, playerLocks?: WheelSettings["steerLockPerCar"]): number {
+  const real = (vehicle && CAR_WHEEL_LOCKS_DEG[vehicle]) || CAR_WHEEL_LOCK_DEG;
+  const own = vehicle ? playerLocks?.[vehicle] : undefined;
+  return typeof own === "number" && Number.isFinite(own) && own >= STEER_LOCK_MIN_DEG && own < real ? own : real;
 }
 
 export const WHEEL_ROTATION_PRESETS = [360, 540, 900, 1080] as const;
@@ -123,6 +136,7 @@ export const DEFAULT_WHEEL_SETTINGS: WheelSettings = {
   ffbDamping: 0.1,
   ffbFilterS: 0,
   ffbPerCar: {},
+  steerLockPerCar: {},
   hidFfb: true,
   telemetryOut: false,
   telemetryPort: 20777,
@@ -132,9 +146,9 @@ export const DEFAULT_WHEEL_SETTINGS: WheelSettings = {
 /** Stick feel presets for the controller steering assist */
 export type PadSensitivity = "smooth" | "default" | "sharp";
 export const PAD_SENSITIVITY: Record<PadSensitivity, { steeringRate: number; deadzone: number; label: string; detail: string }> = {
-  smooth: { steeringRate: 0.35, deadzone: 0.07, label: "Smooth", detail: "Slower, calmer steering" },
-  default: { steeringRate: 0.5, deadzone: 0.05, label: "Default", detail: "Balanced response" },
-  sharp: { steeringRate: 0.75, deadzone: 0.04, label: "Sharp", detail: "Quick turn-in" },
+  smooth: { steeringRate: 0.35, deadzone: 0.07, label: "平顺", detail: "更慢、更平稳的转向" },
+  default: { steeringRate: 0.5, deadzone: 0.05, label: "默认", detail: "均衡的响应" },
+  sharp: { steeringRate: 0.75, deadzone: 0.04, label: "灵敏", detail: "更快的入弯反应" },
 };
 
 /** What the simulator needs from the device layer */
@@ -253,7 +267,7 @@ export class DeviceInputReader {
         wheel.steer,
         wheel.rotationDeg,
         wheel.steerDeadzone,
-        carWheelLockDeg(vehicle)
+        carWheelLockDeg(vehicle, wheel.steerLockPerCar)
       );
       if (wheel.steerSmoothingS > 0 && dtSeconds > 0) {
         this.smoothedSteer += (target - this.smoothedSteer) * (1 - Math.exp(-dtSeconds / wheel.steerSmoothingS));
@@ -315,6 +329,10 @@ export class DeviceInputReader {
   }
 }
 
+/** Belt / gear-driven bases (the rest are taken as direct drive); the CSL Elite is belt-driven, the CSL DD is not */
+const BELT_GEAR_ID = /g29|g920|g923|t150|t248|t300|tmx|csl elite/i;
+/** Logitech devices, by name or by the vendor id Chrome puts in Gamepad.id ("Vendor: 046d") */
+const LOGITECH_ID = /logitech|\b046d\b/i;
 /** Pedal sets, shifters and handbrakes share the wheel brands' names but never steer */
 const NOT_A_WHEEL_BASE = /pedal|srp|sr-p|handbrake|shifter|hgp|sequential/i;
 /** Virtual joysticks (vJoy / SimHub Control Mapper) mirror physical devices and should yield to real hardware */
@@ -329,13 +347,14 @@ export function autoConfigureWheel(pads: readonly PadLike[], current: WheelSetti
   if (current.steer) return null;
   const wheelPad = pads.find((p) => WHEEL_ID.test(p.id) && !NOT_A_WHEEL_BASE.test(p.id) && !isVirtualPad(p.id) && p.axes.length > 0);
   if (!wheelPad) return null;
-  const type: WheelType = /g29|g920|g923|t150|t248|t300|tmx/i.test(wheelPad.id) ? "belt_gear" : "direct_drive";
+  const type: WheelType = BELT_GEAR_ID.test(wheelPad.id) ? "belt_gear" : "direct_drive";
   const rest = wheelPad.axes[0] ?? 0;
   return {
     type,
     ...WHEEL_TYPE_DEFAULTS[type],
     ffbEnabled: true,
-    hidFfb: true,
+    // Logitech's force feedback is proprietary (WebHID refuses it), so it starts on the local bridge
+    hidFfb: !LOGITECH_ID.test(wheelPad.id),
     steer: { padId: wheelPad.id, axis: 0, center: Math.abs(rest) < 0.25 ? rest : 0, invert: false },
   };
 }

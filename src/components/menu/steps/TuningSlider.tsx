@@ -90,8 +90,8 @@ export const StickCurve: React.FC<{ deadzone: number; outerDeadzone: number; lin
 
   return (
     <div className="flex flex-col gap-2 rounded-[18px] border border-[#262B3D] bg-[#08090D] p-3.5">
-      <span className="lc-lbl text-[10px]!">Stick response</span>
-      <svg viewBox="0 0 160 100" className="block h-auto w-full" role="img" aria-label="Stick response curve">
+      <span className="lc-lbl text-[10px]!">摇杆响应</span>
+      <svg viewBox="0 0 160 100" className="block h-auto w-full" role="img" aria-label="摇杆响应曲线">
         <rect x="6" y="6" width="148" height="88" rx="10" fill="none" stroke="#262B3D" strokeWidth="1" />
         <line x1="80" y1="6" x2="80" y2="94" stroke="#262B3D" strokeWidth="1" />
         <line x1="6" y1="50" x2="154" y2="50" stroke="#262B3D" strokeWidth="1" />
@@ -152,7 +152,7 @@ const TriggerRow: React.FC<{ label: string; button: number; gamma: number; color
 /** Live RT / LT readout with the throttle and brake curves applied (grey = raw travel, colour = shaped) */
 export const TriggerBars: React.FC<{ throttleGamma: number; brakeGamma: number }> = ({ throttleGamma, brakeGamma }) => (
   <div className="flex flex-col gap-3 rounded-[18px] border border-[#262B3D] bg-[#08090D] p-3.5">
-    <TriggerRow label="RT · throttle" button={PAD_THROTTLE_BUTTON} gamma={throttleGamma} color="#00E676" />
-    <TriggerRow label="LT · brake" button={PAD_BRAKE_BUTTON} gamma={brakeGamma} color="#FF2A3C" />
+    <TriggerRow label="RT · 油门" button={PAD_THROTTLE_BUTTON} gamma={throttleGamma} color="#00E676" />
+    <TriggerRow label="LT · 刹车" button={PAD_BRAKE_BUTTON} gamma={brakeGamma} color="#FF2A3C" />
   </div>
 );

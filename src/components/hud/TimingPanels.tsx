@@ -67,13 +67,13 @@ export const TowerRows: React.FC<{ race: RaceStatus; gaps?: "interval" | "leader
                 <span
                   className="inline-flex h-[14px] w-[14px] shrink-0 items-center justify-center rounded-full border-[2px] text-[7px] leading-none tracking-normal"
                   style={{ borderColor: TOWER_COMPOUND[e.compound], backgroundColor: e.isPlayer ? "#08090D" : "transparent", color: "#F5F7FA" }}
-                  aria-label={`${e.compound} tyres`}
+                  aria-label={`${e.compound} 轮胎`}
                 >
                   {e.compound[0].toUpperCase()}
                 </span>
               ) : null}
               {purple ? (
-                <span className="shrink-0 rounded-[4px] bg-[#B845FF] px-1 text-[8px] leading-[14px] tracking-[0.06em] text-[#F5F7FA]" title="Fastest lap">
+                <span className="shrink-0 rounded-[4px] bg-[#B845FF] px-1 text-[8px] leading-[14px] tracking-[0.06em] text-[#F5F7FA]" title="最快圈">
                   FL
                 </span>
               ) : null}
@@ -83,12 +83,12 @@ export const TowerRows: React.FC<{ race: RaceStatus; gaps?: "interval" | "leader
               {e.finished ? <span className="h-2.5 w-2.5 shrink-0 rounded-[2px]" style={{ background: CHEQUER_BG }} /> : null}
             </span>
             <span className={`text-[12px] ${e.isPlayer ? "" : i === 0 ? "text-[#CCFF00]" : "text-[#8E96AA]"}`}>
-              {gap === null ? (gaps === "leader" ? "Leader" : "Lead") : `+${gap.toFixed(1)}`}
+              {gap === null ? (gaps === "leader" ? "领先者" : "领先") : `+${gap.toFixed(1)}`}
             </span>
             <span
               className="text-right text-[10px]"
               style={{ color: e.isPlayer && lastD !== null ? "#08090D" : lastColor, opacity: lastD === null ? 0.5 : 1 }}
-              title={e.isPlayer ? "Last lap against your best" : "Their last lap against yours"}
+              title={e.isPlayer ? "上一圈对比你的最佳" : "他们的上一圈对比你的"}
             >
               {lastD === null ? "" : e.isPlayer && lastD <= 0.0005 ? "PB" : `${lastD > 0 ? "+" : "−"}${Math.abs(lastD).toFixed(2)}`}
             </span>
@@ -101,12 +101,12 @@ export const TowerRows: React.FC<{ race: RaceStatus; gaps?: "interval" | "leader
 
 /** Race order (LibreCorsa telemetry timing tower): position, class/livery bar, driver code, gaps and last laps */
 export const TimingTower: React.FC<{ race: RaceStatus; trackCode?: string; gaps?: "interval" | "leader" }> = ({ race, trackCode, gaps }) => (
-  <section aria-label="Timing tower" className={`w-[264px] overflow-hidden rounded-[20px] ${HUD_GLASS}`}>
+  <section aria-label="计时塔" className={`w-[264px] overflow-hidden rounded-[20px] ${HUD_GLASS}`}>
     {/* Pitboard header: mark, lap of laps, position and track code */}
     <div className="flex h-11 items-center gap-2.5 rounded-t-[20px] rounded-b-[14px] bg-[#F5F7FA] pr-3 pl-2 text-[#08090D]">
       <LibreCorsaMark className="h-7 w-7 shrink-0" />
       <span className="lc-disp flex-1 text-[18px] leading-none">
-        Lap {race.lap}
+        第{race.lap}圈
         {race.totalLaps ? <span className="opacity-40">/{race.totalLaps}</span> : null}
       </span>
       <span className="lc-data rounded-full bg-[#08090D] px-2 py-0.5 text-[11px] text-[#CCFF00]">
@@ -125,7 +125,7 @@ interface LapPanelProps {
   deltaS: number | null;
   /** Minimal HUD: a lap pill with a one-line sector and lap-time strip under it */
   variant?: "full" | "minimal";
-  /** The running lap was cut: its clock stays crimson until the next lap */
+  /** Legacy flag: no current rule marks a running lap invalid (track limits, flashback and autopilot all add time or are free instead), so the clock stays white in normal play */
   lapInvalid?: boolean;
 }
 
@@ -152,15 +152,16 @@ function sectorCells(telemetry: CarTelemetry) {
 export const LapPanel: React.FC<LapPanelProps> = ({ telemetry, deltaS, variant = "full", lapInvalid = telemetry.offTrack }) => {
   const sectors = sectorCells(telemetry);
   const lap = Math.max(1, telemetry.lapCount);
-  // A cut lap is invalid: the clock shows it in crimson until the next lap starts
+  // No current rule invalidates a running lap, so the clock stays white; lapInvalid
+  // is only honoured if physics ever flags one explicitly (no current rule does).
   const timeColor = lapInvalid ? HUD_RED : "#F5F7FA";
 
   if (variant === "minimal") {
     return (
       <div className="flex flex-col items-start gap-1.5">
-        <section aria-label="Lap" className={`flex items-center gap-3.5 rounded-full py-2 pr-[18px] pl-2 ${HUD_GLASS}`}>
+        <section aria-label="圈" className={`flex items-center gap-3.5 rounded-full py-2 pr-[18px] pl-2 ${HUD_GLASS}`}>
           <span className="lc-data inline-flex h-10 items-center rounded-full bg-[#1B1F2B] px-3.5 text-[12px] tracking-[0.1em] text-[#F5F7FA]">
-            LAP {lap}
+            第{lap}圈
           </span>
           <span className="lc-data text-[30px] leading-none" style={{ color: timeColor }}>
             {formatLapTime(telemetry.currentLapTimeMs)}
@@ -179,10 +180,10 @@ export const LapPanel: React.FC<LapPanelProps> = ({ telemetry, deltaS, variant =
             <span style={{ color: deltaS <= 0 ? HUD_GREEN : HUD_RED }}>{formatDelta(deltaS)}s</span>
           ) : null}
           <span>
-            LAST <span className="text-[#F5F7FA]/90">{formatLapTime(telemetry.lastLapTimeMs)}</span>
+            上一圈 <span className="text-[#F5F7FA]/90">{formatLapTime(telemetry.lastLapTimeMs)}</span>
           </span>
           <span>
-            <span style={{ color: HUD_PURPLE }}>BEST</span>{" "}
+            <span style={{ color: HUD_PURPLE }}>最佳圈</span>{" "}
             <span className="text-[#F5F7FA]">{formatLapTime(telemetry.bestLapTimeMs)}</span>
           </span>
         </div>
@@ -194,12 +195,12 @@ export const LapPanel: React.FC<LapPanelProps> = ({ telemetry, deltaS, variant =
   const deltaNorm = deltaS !== null ? Math.max(-1, Math.min(1, deltaS / 1.0)) : 0;
 
   return (
-    <section aria-label="Lap" className={`w-[256px] rounded-[22px] p-3.5 ${HUD_GLASS}`}>
+    <section aria-label="圈" className={`w-[256px] rounded-[22px] p-3.5 ${HUD_GLASS}`}>
       {/* Header: lap counter and live delta pill */}
       <div className="flex items-center justify-between gap-2">
         <span className="lc-data inline-flex items-center gap-2 text-[13px] tracking-[0.1em] text-[#F5F7FA]">
           <span className="h-[7px] w-[7px] rounded-full bg-[#CCFF00]" />
-          LAP {lap}
+          第{lap}圈
         </span>
         {deltaS !== null ? (
           <span
@@ -212,7 +213,7 @@ export const LapPanel: React.FC<LapPanelProps> = ({ telemetry, deltaS, variant =
             {formatDelta(deltaS)}s
           </span>
         ) : (
-          <span className={HUD_LBL}>No ref lap</span>
+          <span className={HUD_LBL}>无参考圈</span>
         )}
       </div>
 
@@ -254,12 +255,12 @@ export const LapPanel: React.FC<LapPanelProps> = ({ telemetry, deltaS, variant =
       {/* Last and best lap */}
       <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-[#262B3D] pt-2.5">
         <div>
-          <div className={HUD_LBL}>Last lap</div>
+          <div className={HUD_LBL}>上一圈</div>
           <div className="lc-data text-[15px] text-[#F5F7FA]/90">{formatLapTime(telemetry.lastLapTimeMs)}</div>
         </div>
         <div className="text-right">
           <div className={HUD_LBL} style={{ color: HUD_PURPLE }}>
-            Best lap
+            最佳圈
           </div>
           <div className="lc-data text-[15px] text-[#F5F7FA]">{formatLapTime(telemetry.bestLapTimeMs)}</div>
         </div>

@@ -34,32 +34,32 @@ const CATEGORIES: { id: MfdCategoryId; label: string }[] = [
 ];
 
 const ALL_DIALS: DialMeta[] = [
-  { id: "tc1", category: "tc", label: "TC1", title: "Traction control", lowHint: "More slip", highHint: "Safer", accent: HUD_YELLOW },
-  { id: "tc2", category: "tc", label: "TC2", title: "TC cut", lowHint: "Smoother cut", highHint: "Harder cut", accent: HUD_VOLT },
-  { id: "abs", category: "abs", label: "ABS", title: "ABS", lowHint: "Later", highHint: "Earlier", accent: HUD_CYAN },
-  { id: "bias", category: "bias", label: "BIAS", title: "Brake bias", lowHint: "Rearward", highHint: "Forward", accent: HUD_RED },
-  { id: "diff_entry", category: "diff", label: "ENTRY", title: "Diff entry", lowHint: "Agile", highHint: "Stable", accent: HUD_CYAN },
-  { id: "diff_mid", category: "diff", label: "MID", title: "Diff mid", lowHint: "Rotates", highHint: "Locked", accent: HUD_VOLT },
-  { id: "diff_exit", category: "diff", label: "EXIT", title: "Diff exit", lowHint: "Less snap", highHint: "More drive", accent: HUD_GREEN },
-  { id: "engine_map", category: "pwr", label: "MAP", title: "Engine map", lowHint: "Sharper", highHint: "Smoother", accent: HUD_GREEN },
-  { id: "ers_mode", category: "pwr", label: "ERS", title: "ERS deploy", lowHint: "Harvest", highHint: "Attack", accent: HUD_CYAN },
+  { id: "tc1", category: "tc", label: "TC1", title: "牵引力控制", lowHint: "更多打滑", highHint: "更安全", accent: HUD_YELLOW },
+  { id: "tc2", category: "tc", label: "TC2", title: "TC 切断", lowHint: "更平顺的切断", highHint: "更强的切断", accent: HUD_VOLT },
+  { id: "abs", category: "abs", label: "ABS", title: "ABS", lowHint: "更晚介入", highHint: "更早介入", accent: HUD_CYAN },
+  { id: "bias", category: "bias", label: "BIAS", title: "刹车偏置", lowHint: "偏向后轮", highHint: "偏向前轮", accent: HUD_RED },
+  { id: "diff_entry", category: "diff", label: "ENTRY", title: "差速器入弯", lowHint: "更灵活", highHint: "更稳定", accent: HUD_CYAN },
+  { id: "diff_mid", category: "diff", label: "MID", title: "差速器弯中", lowHint: "更易转动", highHint: "更锁止", accent: HUD_VOLT },
+  { id: "diff_exit", category: "diff", label: "EXIT", title: "差速器出弯", lowHint: "更少甩尾", highHint: "更强驱动", accent: HUD_GREEN },
+  { id: "engine_map", category: "pwr", label: "MAP", title: "发动机模式", lowHint: "更激进", highHint: "更平顺", accent: HUD_GREEN },
+  { id: "ers_mode", category: "pwr", label: "ERS", title: "ERS 释放", lowHint: "回收", highHint: "进攻", accent: HUD_CYAN },
 ];
 
 const ENGINE_MAPS: Record<number, { tag: string; torquePct: number }> = {
-  1: { tag: "QUALI", torquePct: 100 },
-  2: { tag: "RACE", torquePct: 100 },
-  3: { tag: "SMOOTH", torquePct: 96 },
-  4: { tag: "LEAN", torquePct: 92 },
-  5: { tag: "WET", torquePct: 88 },
+  1: { tag: "排位", torquePct: 100 },
+  2: { tag: "正赛", torquePct: 100 },
+  3: { tag: "平顺", torquePct: 96 },
+  4: { tag: "省油", torquePct: 92 },
+  5: { tag: "雨天", torquePct: 88 },
 };
 
 const ERS_MODES = ["CHR", "LIC", "BAL", "RAC", "PSH"] as const;
 const ERS_TAG: Record<(typeof ERS_MODES)[number], string> = {
-  CHR: "CHARGE",
-  LIC: "LOW SPEED",
-  BAL: "BALANCED",
-  RAC: "RACE",
-  PSH: "ATTACK",
+  CHR: "充电",
+  LIC: "低速",
+  BAL: "均衡",
+  RAC: "正赛",
+  PSH: "进攻",
 };
 
 const PHASE_COLORS: Record<DiffPhase, string> = {
@@ -137,14 +137,14 @@ export const MfdStatusChips: React.FC<{ telemetry: CarTelemetry }> = ({ telemetr
           tcActive ? "bg-[#FFB300] text-[#08090D]" : tuner.tcLevel > 0 ? "bg-[#1B1F2B] text-[#F5F7FA]" : "bg-[#1B1F2B] text-[#8E96AA]"
         }`}
       >
-        TC {tuner.tcLevel > 0 ? `${tuner.tcLevel}/${tuner.tc2Level}` : "OFF"}
+        TC {tuner.tcLevel > 0 ? `${tuner.tcLevel}/${tuner.tc2Level}` : "关闭"}
       </span>
       <span
         className={`${MFD_CHIP} ${
           absActive ? "bg-[#00E5FF] text-[#08090D]" : tuner.absLevel > 0 ? "bg-[#1B1F2B] text-[#F5F7FA]" : "bg-[#1B1F2B] text-[#8E96AA]"
         }`}
       >
-        ABS {tuner.absLevel > 0 ? tuner.absLevel : "OFF"}
+        ABS {tuner.absLevel > 0 ? tuner.absLevel : "关闭"}
       </span>
       <span className={`${MFD_CHIP} bg-[#1B1F2B] text-[#CCFF00]`}>BB {tuner.brakeBiasPct.toFixed(1)}</span>
       <span className={`${MFD_CHIP} text-[#08090D]`} style={{ backgroundColor: PHASE_COLORS[tuner.diffActivePhase] }}>
@@ -381,13 +381,13 @@ export const TunerMfdPanel: React.FC<TunerMfdPanelProps> = ({
   // The active dial's value, a short tag beside its name, and its segment bar
   const hero = useMemo((): { text: string; tag: string; segments: number; filled: number; off: boolean } => {
     const lvl = (v: number, offAtZero: boolean) => ({
-      text: offAtZero && v <= 0 ? "OFF" : String(v),
-      tag: offAtZero && v <= 0 ? "" : "OF 12",
+      text: offAtZero && v <= 0 ? "关闭" : String(v),
+      tag: offAtZero && v <= 0 ? "" : "/ 12",
       segments: 12,
       filled: v,
       off: offAtZero && v <= 0,
     });
-    const lock = (v: number) => ({ ...lvl(v, false), tag: `${Math.round(((v - 1) / 11) * 100)}% LOCK` });
+    const lock = (v: number) => ({ ...lvl(v, false), tag: `${Math.round(((v - 1) / 11) * 100)}% 锁止` });
     switch (activeDial.id) {
       case "tc1":
         return lvl(tuner.tcLevel, true);
@@ -398,7 +398,7 @@ export const TunerMfdPanel: React.FC<TunerMfdPanelProps> = ({
       case "bias":
         return {
           text: tuner.brakeBiasPct.toFixed(1),
-          tag: "% FRONT",
+          tag: "% 前轮",
           segments: 14,
           filled: Math.round(Math.max(0, Math.min(1, (tuner.brakeBiasPct - 47) / (75 - 47))) * 14),
           off: false,
@@ -432,7 +432,7 @@ export const TunerMfdPanel: React.FC<TunerMfdPanelProps> = ({
       case "tc":
         return (
           <>
-            <span className={MFD_LBL}>Cut</span>
+            <span className={MFD_LBL}>切断</span>
             <LiveBar frac={tuner.tcCutFraction} color={HUD_YELLOW} />
             <span className="w-[38px] text-right font-f1-mono text-[12px] font-extrabold tabular-nums" style={{ color: tcActive ? HUD_YELLOW : "#F5F7FA" }}>
               {Math.round(tuner.tcCutFraction * 100)}%
@@ -478,12 +478,12 @@ export const TunerMfdPanel: React.FC<TunerMfdPanelProps> = ({
       case "pwr":
         return activeDial.id === "engine_map" ? (
           <>
-            <span className={MFD_LBL}>Torque</span>
+            <span className={MFD_LBL}>扭矩</span>
             <span className="ml-auto font-f1-mono text-[12px] font-extrabold text-[#F5F7FA] tabular-nums">{ENGINE_MAPS[tuner.engineMap]?.torquePct ?? 100}%</span>
           </>
         ) : (
           <>
-            <span className={MFD_LBL}>Battery</span>
+            <span className={MFD_LBL}>电池</span>
             <LiveBar frac={telemetry.ersBatteryPercent / 100} color={HUD_CYAN} />
             <span className="w-[38px] text-right font-f1-mono text-[12px] font-extrabold text-[#00E5FF] tabular-nums">
               {Math.round(telemetry.ersBatteryPercent)}%
@@ -501,8 +501,8 @@ export const TunerMfdPanel: React.FC<TunerMfdPanelProps> = ({
           type="button"
           onClick={() => cycleDial(-1)}
           className={`${MFD_ROUND_BTN} h-[28px] w-[28px] ${flashDir === "left" ? MFD_ROUND_FLASH : `${MFD_ROUND_IDLE} text-[#8E96AA]`}`}
-          title="Previous dial (D-pad ◀ or ,)"
-          aria-label="Previous dial"
+          title="上一个旋钮（方向键 ◀ 或 ,）"
+          aria-label="上一个旋钮"
         >
           <ChevronLeft className="h-4 w-4" strokeWidth={2.6} />
         </button>
@@ -527,8 +527,8 @@ export const TunerMfdPanel: React.FC<TunerMfdPanelProps> = ({
           type="button"
           onClick={() => cycleDial(1)}
           className={`${MFD_ROUND_BTN} h-[28px] w-[28px] ${flashDir === "right" ? MFD_ROUND_FLASH : `${MFD_ROUND_IDLE} text-[#8E96AA]`}`}
-          title="Next dial (D-pad ▶ or .)"
-          aria-label="Next dial"
+          title="下一个旋钮（方向键 ▶ 或 .）"
+          aria-label="下一个旋钮"
         >
           <ChevronRight className="h-4 w-4" strokeWidth={2.6} />
         </button>
@@ -565,8 +565,8 @@ export const TunerMfdPanel: React.FC<TunerMfdPanelProps> = ({
             type="button"
             onClick={() => adjustActiveDial(-1)}
             className={`${MFD_ROUND_BTN} h-9 w-9 text-[14px] ${flashDir === "down" ? MFD_ROUND_FLASH : `${MFD_ROUND_IDLE} text-[#F5F7FA]`}`}
-            aria-label={`Lower ${activeDial.title}`}
-            title={`${activeDial.lowHint} (D-pad ▼ or −)`}
+            aria-label={`降低 ${activeDial.title}`}
+            title={`${activeDial.lowHint}（方向键 ▼ 或 −）`}
           >
             −
           </button>
@@ -580,8 +580,8 @@ export const TunerMfdPanel: React.FC<TunerMfdPanelProps> = ({
             type="button"
             onClick={() => adjustActiveDial(1)}
             className={`${MFD_ROUND_BTN} h-9 w-9 text-[14px] ${flashDir === "up" ? MFD_ROUND_FLASH : `${MFD_ROUND_IDLE} text-[#F5F7FA]`}`}
-            aria-label={`Raise ${activeDial.title}`}
-            title={`${activeDial.highHint} (D-pad ▲ or =)`}
+            aria-label={`提高 ${activeDial.title}`}
+            title={`${activeDial.highHint}（方向键 ▲ 或 =）`}
           >
             +
           </button>
@@ -616,7 +616,7 @@ export const TunerMfdPanel: React.FC<TunerMfdPanelProps> = ({
           type="button"
           onClick={() => setCollapsed((c) => !c)}
           className="flex h-[26px] w-[26px] shrink-0 cursor-pointer items-center justify-center rounded-full text-[#8E96AA] transition-colors hover:bg-white/10 hover:text-[#CCFF00]"
-          aria-label={collapsed ? "Open the tuner" : "Fold the tuner"}
+          aria-label={collapsed ? "打开调校器" : "收起调校器"}
         >
           {collapsed ? <ChevronUp className="h-3.5 w-3.5" strokeWidth={2.6} /> : <ChevronDown className="h-3.5 w-3.5" strokeWidth={2.6} />}
         </button>

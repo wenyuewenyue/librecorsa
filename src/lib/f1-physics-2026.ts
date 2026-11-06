@@ -37,7 +37,9 @@ import type {
   SurfaceType,
   TireCompound,
   TyreSetup,
+  WheelPressures,
 } from '@/types/f1';
+import { axlePressures, pressureAt } from '@/types/f1';
 export type { ControlInputs };
 import {
   BASE_ALTITUDE_M,
@@ -116,6 +118,7 @@ import {
 } from './sim/wet-tyres';
 import type { TrackSurfaceKind } from './sim/track-surfaces';
 import { BRAKE_DUCT_STEP, type ChassisSetup, clampChassisSetup, DEFAULT_CHASSIS_SETUP, pctScale, WING_CLICK_DEG } from './sim/car-setup';
+import { NO_BUFF, type BuffPack } from './sim/buff-pack';
 import { flyingExitSpeedMs, flyingStartPoint, type TyreVisualState } from './sim/simulator-car';
 import type { VehicleWheelState, WheelCornerIndex } from './sim/vehicle-types';
 import {
@@ -195,14 +198,14 @@ export function floorStallFactorForClearance(clearanceM: number): number {
   return 1 - (1 - FLOOR_STALL_MIN_FACTOR) * t * t * (3 - 2 * t);
 }
 
-/** Garage defaults: the cold pressure that reaches the reference (hot) pressure, to 0.1 psi, and the static camber */
+/** Garage defaults: cold gauge pressure reaching the hot gauge reference, to 0.1 psi, and static camber */
 function defaultTyreSetup(): TyreSetup {
   const round = (psi: number) => Math.round(psi * 10) / 10;
   return {
-    coldPressurePsi: {
-      front: round(coldPressureFor(VF26_TYRES.soft.front.pressureRefPsi)),
-      rear: round(coldPressureFor(VF26_TYRES.soft.rear.pressureRefPsi)),
-    },
+    coldPressurePsi: axlePressures(
+      round(coldPressureFor(VF26_TYRES.soft.front.pressureRefPsi)),
+      round(coldPressureFor(VF26_TYRES.soft.rear.pressureRefPsi))
+    ),
     camberDeg: { front: VF26_CHASSIS.front.staticCamberDeg, rear: VF26_CHASSIS.rear.staticCamberDeg },
   };
 }
@@ -243,6 +246,8 @@ interface DrivetrainRuntime {
   clutchEngagement: number;
   /** Throttle pedal before traction control (sets the auto-clutch launch window) */
   launchPedal: number;
+  /** Seconds the auto-clutch has been slipping with the car rolling (lets the launch window down) */
+  launchSlipS: number;
   boostBar: number;
   iceTorqueNm: number;
   mgukTorqueNm: number;
@@ -313,6 +318,8 @@ export class F1Physics2026 {
   private readonly wallQueryRadius = Math.max(...this.wallProbePoints.map(([x, z]) => Math.hypot(x, z))) + 0.5;
 
   public aeroPreset: AeroSetupPreset = 'balanced';
+  /** Activation-code buff multipliers (all 1 when no buff is active) */
+  public buff: BuffPack = NO_BUFF;
   private _assistPreset: DriverAssistPreset = 'semi_pro';
   public tcLevel = 5;
   public tc2Level = 6;
@@ -814,8 +821,9 @@ export class F1Physics2026 {
     const pick = (v: number, lo: number, hi: number, current: number) =>
       Number.isFinite(v) ? THREE.MathUtils.clamp(v, lo, hi) : current;
     const cp = this.tyreSetup.coldPressurePsi;
-    cp.front = Math.round(pick(setup.coldPressurePsi.front, 17, 27, cp.front) * 10) / 10;
-    cp.rear = Math.round(pick(setup.coldPressurePsi.rear, 17, 27, cp.rear) * 10) / 10;
+    for (const k of ["fl", "fr", "rl", "rr"] as const) {
+      cp[k] = Math.round(pick(setup.coldPressurePsi[k], 14, 27, cp[k]) * 10) / 10;
+    }
     this.axles[0].camberDeg = pick(setup.camberDeg.front, -4.5, -1.5, this.axles[0].camberDeg);
     this.axles[1].camberDeg = pick(setup.camberDeg.rear, -3.0, -0.5, this.axles[1].camberDeg);
     this.applyColdPressures();
@@ -1106,6 +1114,7 @@ export class F1Physics2026 {
       clutchLocked: false,
       clutchEngagement: 0,
       launchPedal: 0,
+      launchSlipS: 0,
       boostBar: 0,
       iceTorqueNm: 0,
       mgukTorqueNm: 0,
@@ -1168,7 +1177,7 @@ export class F1Physics2026 {
   /** Pushes the setup's cold pressures into each tyre (the hot pressure follows the ideal gas law) */
   private applyColdPressures(): void {
     for (const w of this.wheels) {
-      const psi = w.isFront ? this.tyreSetup.coldPressurePsi.front : this.tyreSetup.coldPressurePsi.rear;
+      const psi = pressureAt(this.tyreSetup.coldPressurePsi, w.isFront, w.isLeft);
       if (w.tyre.coldPressurePsi !== psi) setTyreColdPressure(w.tyre, psi);
     }
   }
@@ -1374,7 +1383,7 @@ export class F1Physics2026 {
       // using the grip left over after its current cornering force
       // Front torque per wheel at pedal p is T·(bias + mig·p)·p with the migration, so the cap is the root of
       // mig·p² + bias·p − τ/T = 0 for the torque τ the tyre can take
-      const brakeTorqueFull = VF26_BRAKES.maxTorqueNm * VF26_BRAKES.powerMult * this.brakePowerScale;
+      const brakeTorqueFull = VF26_BRAKES.maxTorqueNm * VF26_BRAKES.powerMult * this.brakePowerScale * this.buff.brake;
       const bias0 = VF26_BRAKES.frontBias;
       const mig = VF26_BRAKES.migrationAtFullPedal;
       let pedalCap = 1;
@@ -1551,7 +1560,7 @@ export class F1Physics2026 {
     // ---- 6. Power unit & brakes (controls for the sub-steps) ----------------------
     this.updatePowerUnitControls(dt, throttle, brake);
     const effectiveFrontBias = computeDynamicBrakeMigration(this.liveBrakeBias, brake, this.liveBrakeMigration);
-    const brakeDemand = brake * VF26_BRAKES.maxTorqueNm * VF26_BRAKES.powerMult * this.brakePowerScale;
+    const brakeDemand = brake * VF26_BRAKES.maxTorqueNm * VF26_BRAKES.powerMult * this.brakePowerScale * this.buff.brake;
     const frontPerWheel = brakeDemand * effectiveFrontBias;
     const rearPerWheelDemand = brakeDemand * (1 - effectiveFrontBias);
     // Brake-by-wire: MGU-K harvest replaces part of the rear hydraulic torque. The BBW keeps the
@@ -1728,7 +1737,7 @@ export class F1Physics2026 {
         const rpmAfter = rearOmega * this.overallRatio(desired) * RADS2RPM;
         if (rpmAfter > VF26_ENGINE.maxRpm - 500) desired = drv.gear;
       }
-    } else if (this.autoGearbox && drv.gear >= 1 && drv.autoShiftCooldownS <= 0) {
+    } else if ((this.autoGearbox || this.aiAutopilot) && drv.gear >= 1 && drv.autoShiftCooldownS <= 0) {
       const rpm = drv.engineOmega * RADS2RPM;
       if (drv.gear < 8 && rpm > VF26_DRIVETRAIN.autoUpshiftRpm && drv.clutchLocked && brake < 0.1) {
         desired = drv.gear + 1;
@@ -1764,7 +1773,7 @@ export class F1Physics2026 {
     const rpm = drv.engineOmega * RADS2RPM;
     const speedKmh = Math.abs(this.vxMs) * 3.6;
 
-    if (drv.boostCooldownS > 0) drv.boostCooldownS = Math.max(0, drv.boostCooldownS - dt);
+    if (drv.boostCooldownS > 0) drv.boostCooldownS = Math.max(0, drv.boostCooldownS - dt * this.buff.boostRecharge);
     if (drv.boostRemainingS > 0) {
       drv.boostRemainingS = Math.max(0, drv.boostRemainingS - dt);
       if (drv.boostRemainingS === 0) {
@@ -1860,7 +1869,8 @@ export class F1Physics2026 {
       ice = coast;
     } else {
       const full = this.torqueLut.evaluate(rpm) * (1 + drv.boostBar);
-      ice = coast + (full - coast) * shapedThrottle;
+      const accelMult = Math.abs(this.vxMs) < this.buff.lowSpeedMs ? this.buff.lowSpeedAccel : 1;
+      ice = coast + (full - coast) * shapedThrottle * accelMult;
     }
     drv.iceTorqueNm = ice;
     const mguk = drv.shiftTimerS > 0 ? Math.min(0, drv.mgukTorqueNm) : drv.mgukTorqueNm;
@@ -1936,7 +1946,7 @@ export class F1Physics2026 {
           ? surfaceWetMultiplier(getActiveSurfaceTable()[SURFACE_KIND[contact.surfaceType] ?? 'road'].wetFriction, wet, this.realism.wetSeverity)
           : 1;
       w.surfaceFrictionMult =
-        contact.frictionMult * (sample.gripMultiplier ?? 1) * this.trackEvolutionSample.gripMultiplier * wetSurface;
+        contact.frictionMult * (sample.gripMultiplier ?? 1) * this.trackEvolutionSample.gripMultiplier * wetSurface * this.buff.grip;
       w.roadOffsetPrev = reset ? contact.zRoad + contact.bumpM - w.worldPos.y : w.roadOffset;
       w.roadOffset = contact.zRoad + contact.bumpM - w.worldPos.y;
     }
@@ -2052,9 +2062,9 @@ export class F1Physics2026 {
     const downWaked = frontWaked + rearWaked;
     const dragWaked = drag * wake.dragMultiplier;
 
-    this.aeroDownforceN = downWaked;
-    this.aeroFrontDownforceN = frontWaked;
-    this.aeroRearDownforceN = rearWaked;
+    this.aeroDownforceN = downWaked * this.buff.downforce;
+    this.aeroFrontDownforceN = frontWaked * this.buff.downforce;
+    this.aeroRearDownforceN = rearWaked * this.buff.downforce;
     this.aeroCopFrontPct = downWaked > 1 ? (100 * frontWaked) / downWaked : 50;
     this.aeroDragN = dragWaked;
     this.aeroPitchMomentNm = pitch * (down > 1 ? downWaked / down : 1);
@@ -2259,9 +2269,12 @@ export class F1Physics2026 {
       const rpm = drv.engineOmega * RADS2RPM;
       const window = VF26_DRIVETRAIN.autoClutchFullRpm - VF26_DRIVETRAIN.autoClutchStartRpm;
       const launch = THREE.MathUtils.clamp((drv.launchPedal - 0.2) / 0.6, 0, 1);
+      // Once the car rolls, the launch window comes down to the anti-stall one over launchReleaseS
+      drv.launchSlipS = launch > 0 && ratio !== 0 && omegaAxle * Math.sign(ratio) > 1 ? drv.launchSlipS + h : 0;
+      const hold = Math.max(0, 1 - drv.launchSlipS / VF26_DRIVETRAIN.launchReleaseS);
       const startRpm =
         VF26_DRIVETRAIN.autoClutchStartRpm +
-        launch * Math.max(0, VF26_DRIVETRAIN.launchRpm - window - VF26_DRIVETRAIN.autoClutchStartRpm);
+        launch * hold * Math.max(0, VF26_DRIVETRAIN.launchRpm - window - VF26_DRIVETRAIN.autoClutchStartRpm);
       const engage = THREE.MathUtils.clamp((rpm - startRpm) / window, 0, 1);
       drv.clutchEngagement = engage * engage * (3 - 2 * engage);
       const slip = drv.engineOmega - omegaAxle * ratio;
@@ -2281,6 +2294,7 @@ export class F1Physics2026 {
       if (ratio !== 0 && Math.abs(slipAfter) < 8 && capacity >= Math.abs(tEngine) * 0.9 && capacity > 50) {
         drv.clutchLocked = true;
         drv.engineOmega = omegaAxle * ratio;
+        drv.launchSlipS = 0;
       }
     }
 
@@ -2961,8 +2975,9 @@ export class F1Physics2026 {
     const lapTime = nowMs - this.currentLapStartMs;
     this.onSectorCompleted(3);
     this.currentLapStartMs = nowMs;
-    // Judged track limits: a lap that ends while an excursion is still being judged cannot count
-    const valid = this.lapValid && !(this.trackLimitsMode === 'judged' && (this.trackLimitsHold || this.lastObservation.outOfTrack));
+    // A lap that ends while an excursion was still being judged is no longer deleted:
+    // the lap recorder converts it to +3000 ms, so lastLapValid stays true here.
+    const valid = this.lapValid;
     if (lapTime > 45_000) {
       this.telemetry.lastLapTimeMs = lapTime;
       if (valid && (this.telemetry.bestLapTimeMs === null || lapTime < this.telemetry.bestLapTimeMs)) {
@@ -2976,7 +2991,11 @@ export class F1Physics2026 {
     this.telemetry.lapInvalid = false;
   }
 
-  /** Race control deleted the running lap (judged track limits) */
+  /**
+   * Legacy: no caller uses this any more. Whole-lap invalidation was abolished in
+   * favour of time penalties, so this method is kept only so older call sites and
+   * the SimulatorCar interface still compile; laps are penalised, never deleted.
+   */
   public invalidateLap(): void {
     this.lapValid = false;
     this.telemetry.lapInvalid = true;

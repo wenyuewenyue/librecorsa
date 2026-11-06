@@ -47,13 +47,13 @@ export const StartLights: React.FC<{ race: RaceStatus | undefined }> = ({ race }
             className="lc-disp text-[26px] sm:text-[30px]"
             style={{ color: HUD_VOLT, textShadow: `0 0 18px ${HUD_VOLT}66` }}
           >
-            Race starts in <span className="lc-data not-italic">{countdown}</span>
+            比赛将于 <span className="lc-data not-italic">{countdown}</span> 秒后开始
           </span>
         ) : null}
         <div
           className={`flex gap-2 rounded-full px-3 py-3 sm:gap-3.5 sm:px-5 sm:py-4 short:gap-2 short:py-2 ${HUD_GLASS}`}
           role="img"
-          aria-label={`Start lights: ${race.lightsOn} of 5 lit`}
+          aria-label={`发车灯：5 盏中亮起 ${race.lightsOn} 盏`}
         >
           {LIGHT_COLUMNS.map((i) => {
             const on = i < race.lightsOn;
@@ -94,7 +94,7 @@ export const StartLights: React.FC<{ race: RaceStatus | undefined }> = ({ race }
             className="lc-disp text-[44px] whitespace-nowrap sm:text-[76px]"
             style={{ color: HUD_VOLT, textShadow: "0 0 30px rgba(204,255,0,0.6)" }}
           >
-            Lights out
+            发车！
           </span>
         </div>
       </div>
@@ -106,7 +106,7 @@ export const StartLights: React.FC<{ race: RaceStatus | undefined }> = ({ race }
         <ChequerStrip patternId={patternId} defs />
         <div className="rounded-full border-2 border-[#F5F7FA]/45 bg-[#08090D]/[0.84] px-8 py-4 sm:px-[52px] sm:py-[22px]">
           <span className="lc-disp block text-center text-[36px] whitespace-nowrap text-[#F5F7FA] sm:text-[66px]">
-            Chequered flag
+            方格旗
           </span>
         </div>
         <ChequerStrip patternId={patternId} />

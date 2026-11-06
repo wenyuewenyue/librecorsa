@@ -18,7 +18,7 @@ import { getTrackInfo } from "@/lib/track-registry";
 import type { ChassisSetup } from "@/lib/sim/car-setup";
 import { EngineersGarage } from "@/components/menu/EngineersGarage";
 import { CarPicker } from "@/components/menu/CarPicker";
-import type { CarId } from "@/lib/cars/car-registry";
+import { carTakesLivery, type CarId } from "@/lib/cars/car-registry";
 import { COCKPIT_FOV_MAX_DEG, COCKPIT_FOV_MIN_DEG } from "@/lib/settings/player-settings";
 import { MultiplayerPanel, type MultiplayerPanelProps } from "./MultiplayerPanel";
 import { DisplayPanel, type DisplayPanelProps } from "./DisplayPanel";
@@ -45,13 +45,13 @@ import { LibreCorsaLogo } from "@/components/ui/LibreCorsaLogo";
 import { AI_SKILL_DEFAULT, AI_SKILL_LEVELS, aiSkillLabel } from "@/lib/sim/ai-tuning";
 
 export const CAMERA_LABELS: Record<CameraMode, string> = {
-  chase: "Chase",
+  chase: "车后追踪",
   tv_pod: "T-cam",
-  cockpit_shoulder: "Shoulder",
-  cockpit: "Cockpit",
-  nose: "Nose",
-  helicopter: "Helicopter",
-  tv_side: "Trackside TV",
+  cockpit_shoulder: "肩部视角",
+  cockpit: "驾驶舱",
+  nose: "车头视角",
+  helicopter: "直升机视角",
+  tv_side: "场边转播",
 };
 
 /** Views the C key (and the pause menu's camera button) cycles through */
@@ -74,7 +74,8 @@ export interface TyreSetupLimits {
 }
 
 const F1_TYRE_SETUP_LIMITS: TyreSetupLimits = {
-  pressurePsi: { min: 17, max: 27, step: 0.5 },
+  // VF26 cold gauge pressures at 20 °C; includes the physical 15.7 / 14.1 psi defaults.
+  pressurePsi: { min: 14, max: 27, step: 0.5 },
   camberFrontDeg: { min: -4.5, max: -1.5, step: 0.1 },
   camberRearDeg: { min: -3, max: -0.5, step: 0.1 },
 };
@@ -116,6 +117,8 @@ export interface PauseMenuProps extends MultiplayerPanelProps {
   isMuted: boolean;
   mouseSteerEnabled: boolean;
   gamepadAssist: boolean;
+  autoGearbox?: boolean;
+  onSetAutoGearbox?: (enabled: boolean) => void;
   gamepadRumble: boolean;
   aiOpponents: boolean;
   /** AI opponents' skill (0 Rookie … 100 Alien) and its setter */
@@ -153,7 +156,7 @@ export interface PauseMenuProps extends MultiplayerPanelProps {
   /** Rows of the controls cheat-sheet, from the player's bindings */
   controlsCheatSheet?: readonly (readonly [string, string])[];
   /** Key names for the hints on the toggles (defaults: the original layout) */
-  keyNames?: Partial<Record<"camera" | "racingLine" | "mute" | "mouseSteer" | "autopilot" | "restart", string>>;
+  keyNames?: Partial<Record<"camera" | "racingLine" | "mute" | "mouseSteer" | "autopilot" | "restart" | "shiftUp" | "shiftDown", string>>;
   /** HUD layout, graphics, touch controls and VR */
   displayPanel?: DisplayPanelProps;
   /** Lap times, ghosts and the online board */
@@ -226,11 +229,11 @@ export const formatCamber = (value: number) => `${value < 0 ? "−" : ""}${Math.
 
 /** Compounds in the garage's segmented row, with their sidewall ring colour */
 export const COMPOUNDS: readonly { id: TireCompound; label: string; name: string; ring: string }[] = [
-  { id: "soft", label: "Soft", name: "Soft tyres", ring: "#FF2A3C" },
-  { id: "medium", label: "Med", name: "Medium tyres", ring: "#FFB300" },
-  { id: "hard", label: "Hard", name: "Hard tyres", ring: "#F5F7FA" },
-  { id: "intermediate", label: "Inter", name: "Intermediate tyres (wet track)", ring: "#3CCB4A" },
-  { id: "wet", label: "Wet", name: "Full wet tyres (standing water)", ring: "#2E7BFF" },
+  { id: "soft", label: "软胎", name: "软胎", ring: "#FF2A3C" },
+  { id: "medium", label: "中胎", name: "中性胎", ring: "#FFB300" },
+  { id: "hard", label: "硬胎", name: "硬胎", ring: "#F5F7FA" },
+  { id: "intermediate", label: "中雨胎", name: "中雨胎（湿赛道）", ring: "#3CCB4A" },
+  { id: "wet", label: "全雨胎", name: "全雨胎（积水路面）", ring: "#2E7BFF" },
 ];
 
 /** One option of a pill segmented row (aria-pressed, like Choice) */
@@ -341,29 +344,29 @@ export const PauseMenu: React.FC<PauseMenuProps> = (props) => {
   const tabs = useMemo(
     () =>
       [
-        { id: "settings" as const, label: "Session", icon: SlidersHorizontal },
-        { id: "setup" as const, label: "Car setup", icon: Wrench },
-        { id: "corners" as const, label: "Corners", icon: CornerDownRight },
-        { id: "multiplayer" as const, label: "Multiplayer", icon: Users },
-        ...(leaderboardPanel ? [{ id: "leaderboard" as const, label: "Lap times", icon: Timer }] : []),
-        ...(displayPanel ? [{ id: "display" as const, label: "Display", icon: MonitorCog }] : []),
+        { id: "settings" as const, label: "会话", icon: SlidersHorizontal },
+        { id: "setup" as const, label: "车辆调校", icon: Wrench },
+        { id: "corners" as const, label: "弯道", icon: CornerDownRight },
+        { id: "multiplayer" as const, label: "联机", icon: Users },
+        ...(leaderboardPanel ? [{ id: "leaderboard" as const, label: "圈速", icon: Timer }] : []),
+        ...(displayPanel ? [{ id: "display" as const, label: "显示", icon: MonitorCog }] : []),
       ] satisfies { id: Panel; label: string; icon: LucideIcon }[],
     [leaderboardPanel, displayPanel]
   );
 
   const actions = useMemo(
     () => [
-      { id: "resume", label: "Resume", detail: "Back on track", icon: Play, primary: true, run: () => onTogglePause() },
+      { id: "resume", label: "继续", detail: "回到赛道", icon: Play, primary: true, run: () => onTogglePause() },
       ...(canRestart
         ? [
             {
               id: "grid",
-              label: aiOpponents || mpRace ? "Restart race" : "Grid start",
+              label: aiOpponents || mpRace ? "重开比赛" : "发车格起步",
               detail: mpRace
-                ? "Everyone back to the grid behind the lights"
+                ? "所有人回到发车格等待发车灯"
                 : aiOpponents
-                  ? "Line up on the grid behind the lights"
-                  : "Standing start from the grid",
+                  ? "在发车格排队等待发车灯"
+                  : "从发车格静止起步",
               icon: RotateCcw,
               run: () => {
                 onResetCar(false);
@@ -376,8 +379,8 @@ export const PauseMenu: React.FC<PauseMenuProps> = (props) => {
         ? [
             {
               id: "flying",
-              label: aiOpponents ? "Rolling start" : "Flying lap",
-              detail: aiOpponents ? "Restart the race on the move" : "Timed lap from the main straight",
+              label: aiOpponents ? "滚动起步" : "飞驰圈",
+              detail: aiOpponents ? "行进中重开比赛" : "从主直道开始的计时圈",
               icon: Gauge,
               run: () => {
                 onResetCar(true);
@@ -387,9 +390,9 @@ export const PauseMenu: React.FC<PauseMenuProps> = (props) => {
           ]
         : []),
       ...(onOpenControls
-        ? [{ id: "controls", label: "Controls", detail: "Keys, controller, wheel calibration", icon: Gamepad2, run: onOpenControls }]
+        ? [{ id: "controls", label: "操作设置", detail: "键盘、手柄、方向盘校准", icon: Gamepad2, run: onOpenControls }]
         : []),
-      ...(onExitToTitle ? [{ id: "title", label: "Main menu", detail: "Leave the session", icon: LogOut, run: onExitToTitle }] : []),
+      ...(onExitToTitle ? [{ id: "title", label: "主菜单", detail: "离开本会话", icon: LogOut, run: onExitToTitle }] : []),
     ],
     [aiOpponents, mpRace, canRestart, onResetCar, onTogglePause, onOpenControls, onExitToTitle]
   );
@@ -439,7 +442,7 @@ export const PauseMenu: React.FC<PauseMenuProps> = (props) => {
           <div className="flex min-w-0 flex-col gap-2.5 short:gap-1.5">
             <div className="flex items-center gap-2 font-f1-mono text-xs font-extrabold tracking-[0.22em] text-[#CCFF00]">
               <Pause aria-hidden className="h-3.5 w-3.5" fill="currentColor" strokeWidth={0} />
-              PAUSED
+              已暂停
             </div>
             <h1 className="lc-disp m-0 text-[clamp(32px,4.2vw,60px)] text-[#F5F7FA] short:text-[28px]">
               {trackInfo.name}
@@ -449,22 +452,22 @@ export const PauseMenu: React.FC<PauseMenuProps> = (props) => {
                 {trackInfo.city}, {trackInfo.country}
               </span>
               <span className={`${HEADER_CHIP} border border-[#262B3D] bg-[#11131A] text-[#F5F7FA]`}>
-                Lap {Math.max(1, race?.lap ?? telemetry.lapCount)}
+                第{Math.max(1, race?.lap ?? telemetry.lapCount)}圈
                 {race?.totalLaps ? ` / ${race.totalLaps}` : ""}
               </span>
               {race ? (
                 <span className={`${HEADER_CHIP} bg-[#CCFF00] text-[#08090D]`}>
-                  P{race.position} of {race.fieldSize}
+                  第{race.position}名 / 共{race.fieldSize}名
                 </span>
               ) : null}
-              {mpRace ? <span className={`${HEADER_CHIP} bg-[#00E5FF] text-[#08090D]`}>Online race</span> : null}
+              {mpRace ? <span className={`${HEADER_CHIP} bg-[#00E5FF] text-[#08090D]`}>在线比赛</span> : null}
             </div>
           </div>
           <LibreCorsaLogo variant="compact" />
         </div>
 
         <div className="mt-5 grid flex-1 grid-cols-1 items-start gap-6 lg:grid-cols-[minmax(240px,270px)_minmax(0,1fr)] short:mt-3 short:gap-4">
-          <nav className="flex flex-col gap-1" data-nav-zone="rail" aria-label="Pause menu">
+          <nav className="flex flex-col gap-1" data-nav-zone="rail" aria-label="暂停菜单">
             {actions.map((a) =>
               "primary" in a && a.primary ? (
                 <PrimaryRailItem
@@ -506,15 +509,15 @@ export const PauseMenu: React.FC<PauseMenuProps> = (props) => {
         <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-[#262B3D] pt-3 short:mt-3">
           <PromptBar
             prompts={[
-              { action: "move", label: "Move" },
-              { action: "select", label: panel === "corners" ? "Jump there" : "Select" },
-              { action: "tabs", label: "Tabs" },
-              { action: "back", label: "Back", key: "⌫" },
-              { action: "start", label: "Resume", key: "Esc" },
+              { action: "move", label: "移动" },
+              { action: "select", label: panel === "corners" ? "跳至该弯" : "选择" },
+              { action: "tabs", label: "标签页" },
+              { action: "back", label: "返回", key: "⌫" },
+              { action: "start", label: "继续", key: "Esc" },
             ]}
           />
           <span className="hidden font-f1-mono text-[11px] font-bold tracking-[0.12em] text-[#8E96AA] md:inline">
-            {(TRACK_TOTAL_LENGTH_M / 1000).toFixed(2)} KM · {TURN_METADATA.length} TURNS · LIBRECORSA
+            {(TRACK_TOTAL_LENGTH_M / 1000).toFixed(2)} 公里 · {TURN_METADATA.length} 个弯 · WY赛车
           </span>
         </div>
       </div>
@@ -529,52 +532,60 @@ export const SessionPanel: React.FC<PauseMenuProps> = (p) => {
     mute: "M",
     mouseSteer: "V",
     autopilot: "P",
+    shiftUp: "E",
+    shiftDown: "Q",
     ...p.keyNames,
   };
   return (
     <div className="grid items-start gap-3.5 xl:grid-cols-[1.45fr_1fr]">
-      <section className={PANEL_CARD} aria-label="Session">
-        <PanelSection>Session</PanelSection>
+      <section className={PANEL_CARD} aria-label="会话">
+        <PanelSection>会话</PanelSection>
         <div className="grid gap-x-[22px] gap-y-0.5 sm:grid-cols-2">
           <Toggle
-            label="AI opponents"
-            detail="Race 5 AI cars from a standing start"
+            label="AI 对手"
+            detail="与 5 辆 AI 赛车静止起步竞速"
             checked={p.aiOpponents}
             onChange={p.onToggleAiOpponents}
           />
           <Toggle
-            label="Racing line"
-            detail={`Braking-aware line on the track (${k.racingLine})`}
+            label="赛车线"
+            detail={`赛道上的刹车感知赛车线（${k.racingLine}）`}
             checked={p.showRacingLine}
             onChange={p.onToggleRacingLine}
           />
-          <Toggle label="Engine sound" detail={k.mute} checked={!p.isMuted} onChange={p.onToggleMute} />
+          <Toggle label="引擎音效" detail={k.mute} checked={!p.isMuted} onChange={p.onToggleMute} />
           <Toggle
-            label="Gamepad steering assist"
-            detail="Stick steers up to the front-tyre grip limit"
+            label="自动变速箱"
+            detail={`关闭：用升挡 / 降挡键（${k.shiftUp} / ${k.shiftDown}）手动换挡`}
+            checked={p.autoGearbox ?? true}
+            onChange={() => p.onSetAutoGearbox?.(!(p.autoGearbox ?? true))}
+          />
+          <Toggle
+            label="手柄转向辅助"
+            detail="摇杆转向至前胎抓地极限"
             checked={p.gamepadAssist}
             onChange={() => p.onToggleGamepadAssist?.()}
           />
           <Toggle
-            label="Gamepad rumble"
-            detail="Kerbs, lock-up, wheelspin and grass through the pad"
+            label="手柄震动"
+            detail="通过手柄感受路肩、抱死、打滑和草地"
             checked={p.gamepadRumble}
             onChange={p.onToggleGamepadRumble}
           />
           <Toggle
-            label="Mouse steering"
+            label="鼠标转向"
             detail={k.mouseSteer}
             checked={p.mouseSteerEnabled}
             onChange={() => p.onToggleMouseSteer?.()}
           />
           <Toggle
-            label="Autopilot"
-            detail={`The AI drives your car (${k.autopilot})`}
+            label="自动驾驶"
+            detail={`由 AI 驾驶你的车辆（${k.autopilot}）`}
             checked={p.telemetry.aiAutopilot}
             onChange={p.onToggleAiAutopilot}
           />
           <div className="flex min-h-[48px] items-center justify-between gap-3 px-2">
-            <span className="text-[16px] leading-tight font-bold text-[#F5F7FA]">Camera</span>
+            <span className="text-[16px] leading-tight font-bold text-[#F5F7FA]">视角</span>
             <button
               type="button"
               onClick={p.onCycleCamera}
@@ -587,7 +598,7 @@ export const SessionPanel: React.FC<PauseMenuProps> = (p) => {
         {p.onChangeAiSkill ? (
           <div className="border-t border-[#262B3D] pt-1.5">
             <TyreSlider
-              label="AI level"
+              label="AI 水平"
               value={p.aiSkill ?? AI_SKILL_DEFAULT}
               limits={{ min: 0, max: 100, step: 5 }}
               format={(v) => `${aiSkillLabel(v)} · ${Math.round(v)}`}
@@ -615,10 +626,10 @@ export const SessionPanel: React.FC<PauseMenuProps> = (p) => {
         {p.onChangeCockpitFov ? (
           <div className="border-t border-[#262B3D] pt-1.5">
             <TyreSlider
-              label="Cockpit FOV · [ ]"
+              label="驾驶舱视场角 · [ ]"
               value={p.cockpitFovDeg ?? p.cockpitFovDefaultDeg ?? 60}
               limits={{ min: COCKPIT_FOV_MIN_DEG, max: COCKPIT_FOV_MAX_DEG, step: 1 }}
-              format={(v) => (p.cockpitFovDeg == null ? `${v}° · car` : `${v}°`)}
+              format={(v) => (p.cockpitFovDeg == null ? `${v}° · 车辆` : `${v}°`)}
               onChange={p.onChangeCockpitFov}
             />
             {p.cockpitFovDeg != null ? (
@@ -627,28 +638,38 @@ export const SessionPanel: React.FC<PauseMenuProps> = (p) => {
                 onClick={() => p.onChangeCockpitFov?.(null)}
                 className="min-h-[32px] cursor-pointer px-2 font-f1-mono text-[11px] font-extrabold tracking-[0.12em] text-[#8E96AA] uppercase transition-colors hover:text-[#CCFF00]"
               >
-                Car default{p.cockpitFovDefaultDeg ? ` (${p.cockpitFovDefaultDeg}°)` : ""}
+                车辆默认{p.cockpitFovDefaultDeg ? ` (${p.cockpitFovDefaultDeg}°)` : ""}
               </button>
             ) : null}
           </div>
         ) : null}
       </section>
 
-      <section className={PANEL_CARD} aria-label="Controls">
-        <PanelSection color="#00E5FF">Controls</PanelSection>
+      <section className={PANEL_CARD} aria-label="操作设置">
+        <PanelSection color="#00E5FF">操作设置</PanelSection>
         <div className="flex flex-col">
           {(
             p.controlsCheatSheet ?? [
-              ["Throttle / brake", "W S · ↑ ↓"],
-              ["Steer", "A D · ← →"],
-              ["Boost (manual override)", "Space · B"],
-              ["Active aero X / Z", "X"],
-              ["Gear up / down", "E / Q"],
-              ["Camera", "C"],
-              ["Cockpit FOV", "[ / ]"],
-              ["Racing line", "R"],
-              ["Restart", "Backspace"],
-              ["Pad", "RT / LT · stick · A boost"],
+              ["油门 / 刹车", "W S · ↑ ↓"],
+              ["转向", "A D · ← →"],
+              ["增压（按住）", "Space · L-Shift"],
+              ["增压（锁定）", "B"],
+              ["主动空力", "X"],
+              ["升挡 / 降挡", "E / Q"],
+              ["视角", "C"],
+              ["赛车线", "R"],
+              ["静音", "M"],
+              ["自动驾驶", "P"],
+              ["鼠标转向", "V"],
+              ["驾驶舱视场角", "[ / ]"],
+              ["重开", "Backspace"],
+              ["半油门", "F"],
+              ["即时回放", "T"],
+              ["下一页仪表", "Ins · I"],
+              ["按键显示", "H"],
+              ["手柄 · 驾驶", "RT 油门 · LT 刹车 · 摇杆转向 · A 增压 · RB/LB 挡位"],
+              ["手柄 · 功能", "X 空力 · Y 视角 · 赛车线 — · View 重开 · Menu 菜单 · LS 仪表 · B 下一页 · RS HUD"],
+              ["保留按键", "Esc 暂停菜单 · / 输入 /boost"],
             ]
           ).map(([label, keys]) => (
             <div
@@ -672,21 +693,21 @@ export const SetupPanel: React.FC<PauseMenuProps> = (p) => {
       <div className="grid grid-cols-[repeat(auto-fit,minmax(min(360px,100%),1fr))] gap-[26px] short:gap-5">
         <div className="flex min-w-0 flex-col gap-[18px]">
           <div className="flex flex-col gap-2.5">
-            <PanelSection>Vehicle class &amp; chassis</PanelSection>
+            <PanelSection>车辆级别与底盘</PanelSection>
             <CarPicker carId={p.carId} onChangeCar={p.onChangeCar} />
           </div>
 
           <div className="flex flex-col gap-2.5">
-            <PanelSection color="#00E5FF">Aero package</PanelSection>
+            <PanelSection color="#00E5FF">空力套件</PanelSection>
             <div className="grid grid-cols-3 gap-2">
               {(
                 [
-                  { id: "low_downforce", title: "Low downforce", sub: "Top speed" },
-                  { id: "balanced", title: "Balanced", sub: "Reference setup" },
+                  { id: "low_downforce", title: "低阻力", sub: "极速" },
+                  { id: "balanced", title: "均衡", sub: "基准调校" },
                   {
                     id: "high_downforce",
-                    title: "High downforce",
-                    sub: "Corner grip",
+                    title: "高下压力",
+                    sub: "弯道抓地",
                   },
                 ] as const
               ).map((item) => {
@@ -715,7 +736,7 @@ export const SetupPanel: React.FC<PauseMenuProps> = (p) => {
         <div className="flex min-w-0 flex-col gap-[18px]">
           <div className="grid gap-3.5 sm:grid-cols-2">
             <div className="flex min-w-0 flex-col gap-2.5">
-              <PanelSection>Tyres</PanelSection>
+              <PanelSection>轮胎</PanelSection>
               <div className="flex rounded-full border border-[#262B3D] bg-[#08090D] p-1">
                 {COMPOUNDS.map((c) => {
                   const active = p.tireCompound === c.id;
@@ -744,13 +765,13 @@ export const SetupPanel: React.FC<PauseMenuProps> = (p) => {
               </div>
             </div>
             <div className="flex min-w-0 flex-col gap-2.5">
-              <PanelSection>Traction &amp; ABS</PanelSection>
+              <PanelSection>牵引力与 ABS</PanelSection>
               <div className="flex rounded-full border border-[#262B3D] bg-[#08090D] p-1">
                 {(
                   [
-                    { id: "pro", label: "Off" },
+                    { id: "pro", label: "关闭" },
                     { id: "semi_pro", label: "TC + ABS" },
-                    { id: "assisted", label: "Full" },
+                    { id: "assisted", label: "全部" },
                   ] as const
                 ).map((a) => {
                   const active = p.assistPreset === a.id;
@@ -774,42 +795,40 @@ export const SetupPanel: React.FC<PauseMenuProps> = (p) => {
 
           <div className="flex flex-col gap-3 rounded-[20px] border border-[#262B3D] bg-[#08090D]/55 p-4">
             <div className="flex items-center justify-between gap-3">
-              <PanelSection>Tyres · pressure &amp; camber</PanelSection>
+              <PanelSection>轮胎 · 胎压与外倾角</PanelSection>
               <button
                 type="button"
                 onClick={() => p.onChangeTyreSetup(p.defaultTyreSetup)}
                 className="inline-flex h-[30px] shrink-0 cursor-pointer items-center rounded-full border border-[#262B3D] px-3 font-f1-mono text-[10px] font-extrabold tracking-[0.12em] text-[#8E96AA] uppercase transition-colors hover:border-[#CCFF00] hover:text-[#CCFF00]"
               >
-                Reset
+                重置
               </button>
             </div>
             <div className="grid gap-x-5 gap-y-1 sm:grid-cols-2">
+              {(
+                [
+                  ["fl", "左前冷胎压"],
+                  ["fr", "右前冷胎压"],
+                  ["rl", "左后冷胎压"],
+                  ["rr", "右后冷胎压"],
+                ] as const
+              ).map(([k, label]) => (
+                <TyreSlider
+                  key={k}
+                  label={label}
+                  value={p.tyreSetup.coldPressurePsi[k]}
+                  limits={limits.pressurePsi}
+                  format={formatPsi}
+                  onChange={(v) =>
+                    p.onChangeTyreSetup({
+                      ...p.tyreSetup,
+                      coldPressurePsi: { ...p.tyreSetup.coldPressurePsi, [k]: v },
+                    })
+                  }
+                />
+              ))}
               <TyreSlider
-                label="Front cold pressure"
-                value={p.tyreSetup.coldPressurePsi.front}
-                limits={limits.pressurePsi}
-                format={formatPsi}
-                onChange={(v) =>
-                  p.onChangeTyreSetup({
-                    ...p.tyreSetup,
-                    coldPressurePsi: { ...p.tyreSetup.coldPressurePsi, front: v },
-                  })
-                }
-              />
-              <TyreSlider
-                label="Rear cold pressure"
-                value={p.tyreSetup.coldPressurePsi.rear}
-                limits={limits.pressurePsi}
-                format={formatPsi}
-                onChange={(v) =>
-                  p.onChangeTyreSetup({
-                    ...p.tyreSetup,
-                    coldPressurePsi: { ...p.tyreSetup.coldPressurePsi, rear: v },
-                  })
-                }
-              />
-              <TyreSlider
-                label="Front camber"
+                label="前轮外倾角"
                 value={p.tyreSetup.camberDeg.front}
                 limits={limits.camberFrontDeg}
                 format={formatCamber}
@@ -821,7 +840,7 @@ export const SetupPanel: React.FC<PauseMenuProps> = (p) => {
                 }
               />
               <TyreSlider
-                label="Rear camber"
+                label="后轮外倾角"
                 value={p.tyreSetup.camberDeg.rear}
                 limits={limits.camberRearDeg}
                 format={formatCamber}
@@ -834,41 +853,45 @@ export const SetupPanel: React.FC<PauseMenuProps> = (p) => {
               />
             </div>
             <p className="m-0 text-[12px] leading-normal text-[#8E96AA]">
-              Read the tread temps on the tyre panel: inner hotter than outer by 5–10 °C is ideal.
+              查看轮胎面板的胎面温度：内侧比外侧高 5–10 °C 为理想状态。
             </p>
           </div>
 
           <div className="flex flex-col gap-2.5">
-            <PanelSection>Livery</PanelSection>
-            <div className="grid grid-cols-5 gap-2">
-              {LIVERIES.map((liv) => {
-                const active = p.selectedLivery.id === liv.id;
-                return (
-                  <button
-                    key={liv.id}
-                    type="button"
-                    aria-pressed={active}
-                    aria-label={liv.name}
-                    title={`${liv.name} · ${liv.team}`}
-                    onClick={() => p.onChangeLivery(liv)}
-                    className={`flex min-h-[44px] min-w-0 cursor-pointer flex-col gap-2 rounded-2xl p-2 text-left transition-[background-color,border-color,color] duration-200 ${
-                      active
-                        ? "border-[1.5px] border-[#CCFF00] bg-[#CCFF00]/[0.07] text-[#F5F7FA]"
-                        : "border border-[#262B3D] bg-[#08090D]/50 text-[#C5CBD8] hover:border-[#3A4157] hover:bg-[#1B1F2B] hover:text-[#F5F7FA]"
-                    }`}
-                  >
-                    <span
-                      aria-hidden
-                      className="block h-[26px] w-full rounded-[10px]"
-                      style={{
-                        background: `linear-gradient(135deg, ${liv.primary} 0 55%, ${liv.accent} 55% 65%, ${liv.secondary} 65% 100%)`,
-                      }}
-                    />
-                    <span className="truncate text-[11px] font-bold">{liv.name}</span>
-                  </button>
-                );
-              })}
-            </div>
+            <PanelSection>涂装</PanelSection>
+            {!carTakesLivery(p.carId) ? (
+              <p className="m-0 text-[12px] text-[#8E96AA]">原厂涂装：该车保留原厂车漆。</p>
+            ) : (
+              <div className="grid grid-cols-5 gap-2">
+                {LIVERIES.map((liv) => {
+                  const active = p.selectedLivery.id === liv.id;
+                  return (
+                    <button
+                      key={liv.id}
+                      type="button"
+                      aria-pressed={active}
+                      aria-label={liv.name}
+                      title={`${liv.name} · ${liv.team}`}
+                      onClick={() => p.onChangeLivery(liv)}
+                      className={`flex min-h-[44px] min-w-0 cursor-pointer flex-col gap-2 rounded-2xl p-2 text-left transition-[background-color,border-color,color] duration-200 ${
+                        active
+                          ? "border-[1.5px] border-[#CCFF00] bg-[#CCFF00]/[0.07] text-[#F5F7FA]"
+                          : "border border-[#262B3D] bg-[#08090D]/50 text-[#C5CBD8] hover:border-[#3A4157] hover:bg-[#1B1F2B] hover:text-[#F5F7FA]"
+                      }`}
+                    >
+                      <span
+                        aria-hidden
+                        className="block h-[26px] w-full rounded-[10px]"
+                        style={{
+                          background: `linear-gradient(135deg, ${liv.primary} 0 55%, ${liv.accent} 55% 65%, ${liv.secondary} 65% 100%)`,
+                        }}
+                      />
+                      <span className="truncate text-[11px] font-bold">{liv.name}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -934,15 +957,15 @@ const CornersPanel: React.FC<{ onSelect: (turn: number) => void }> = ({ onSelect
 
   return (
     <section
-      aria-label="Jump to a corner"
+      aria-label="跳至弯道"
       className="grid grid-cols-[repeat(auto-fit,minmax(min(340px,100%),1fr))] gap-3.5 rounded-[24px] border border-white/[0.07] bg-[#0D0F15]/82 p-[18px] text-[#F5F7FA] short:p-3.5"
     >
       <div className="flex min-w-0 flex-col gap-2.5">
-        <PanelSection>Jump to a corner · apex speed · gear</PanelSection>
+        <PanelSection>跳至弯道 · 弯心速度 · 挡位</PanelSection>
         <svg
           viewBox={map.viewBox}
           role="img"
-          aria-label={`Circuit map with ${TURN_METADATA.length} numbered turns`}
+          aria-label={`带 ${TURN_METADATA.length} 个编号弯道的赛道图`}
           className="hidden h-auto max-h-[400px] w-full sm:block short:max-h-[200px]"
         >
           <path d={map.d} fill="none" stroke="#141822" strokeWidth={46} strokeLinejoin="round" />
@@ -986,12 +1009,12 @@ const CornersPanel: React.FC<{ onSelect: (turn: number) => void }> = ({ onSelect
               <span className="flex min-w-0 flex-col">
                 <span className="lc-title truncate text-[15px] text-[#F5F7FA]">{cornerName(hotTurn.name)}</span>
                 <span className="truncate text-[12px] text-[#8E96AA]">
-                  {hotTurn.complexName} · Sector {hotTurn.sector}
+                  {hotTurn.complexName} · 第 {hotTurn.sector} 分段
                 </span>
               </span>
             </>
           ) : (
-            <span className="text-[13px] text-[#8E96AA]">Pick a corner to jump there.</span>
+            <span className="text-[13px] text-[#8E96AA]">选择一个弯道以跳至该处。</span>
           )}
         </div>
       </div>
@@ -1006,7 +1029,7 @@ const CornersPanel: React.FC<{ onSelect: (turn: number) => void }> = ({ onSelect
             onPointerLeave={() => setHot((h) => (h === t.number ? null : h))}
             onFocus={() => setHot(t.number)}
             onBlur={() => setHot((h) => (h === t.number ? null : h))}
-            aria-label={`Turn ${t.number}: ${cornerName(t.name)}, ${t.complexName}. Apex ${t.apexSpeedKmh} km/h, gear ${t.gear}`}
+            aria-label={`第 ${t.number} 号弯：${cornerName(t.name)}，${t.complexName}。弯心 ${t.apexSpeedKmh} km/h，挡位 ${t.gear}`}
             title={`${cornerName(t.name)} · ${t.complexName}`}
             className="group grid min-h-[44px] cursor-pointer grid-cols-[44px_minmax(0,1fr)_auto] items-center gap-2.5 rounded-[14px] bg-[#08090D]/55 px-3 py-1 text-left text-[#F5F7FA] shadow-[inset_0_0_0_1px_#1B1F2B] outline-none transition-[background-color,box-shadow,color] duration-200 hover:shadow-[inset_0_0_0_1px_#CCFF00] focus:bg-[#CCFF00] focus:text-[#08090D] focus:shadow-[0_0_0_4px_rgba(204,255,0,0.15)]"
           >

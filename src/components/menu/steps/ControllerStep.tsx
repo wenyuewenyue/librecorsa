@@ -147,12 +147,12 @@ export const ControllerStep: React.FC<SetupStepProps> = ({
         deadzone: PAD_SENSITIVITY[prev.padSensitivity].deadzone,
       },
     }));
-  const curveLabel = (v: number) => (Math.abs(v - 1) < 0.025 ? "Linear" : v > 1 ? `Progressive ${v.toFixed(2)}` : `Aggressive ${v.toFixed(2)}`);
+  const curveLabel = (v: number) => (Math.abs(v - 1) < 0.025 ? "线性" : v > 1 ? `渐进 ${v.toFixed(2)}` : `激进 ${v.toFixed(2)}`);
 
   return (
     <div className="flex flex-col gap-4">
       <SetupCard
-        label="Input check"
+        label="输入检查"
         action={
           pad ? (
             <span className="flex min-w-0 items-center gap-2 font-f1-mono text-[12px] font-bold text-[#CCFF00]">
@@ -164,14 +164,14 @@ export const ControllerStep: React.FC<SetupStepProps> = ({
       >
         {pad ? (
           <div className="flex flex-col gap-3.5">
-            <TrackMeter label="Steer" value={pad.axes[0] ?? 0} color="#00E5FF" centered />
+            <TrackMeter label="转向" value={pad.axes[0] ?? 0} color="#00E5FF" centered />
             <TrackMeter
-              label="Throttle"
+              label="油门"
               value={pad.buttons[PAD_THROTTLE_BUTTON]?.value ?? 0}
               detail={`RT · ${Math.round((pad.buttons[PAD_THROTTLE_BUTTON]?.value ?? 0) * 100)}%`}
             />
             <TrackMeter
-              label="Brake"
+              label="刹车"
               value={pad.buttons[PAD_BRAKE_BUTTON]?.value ?? 0}
               color="#FF2A3C"
               detail={`LT · ${Math.round((pad.buttons[PAD_BRAKE_BUTTON]?.value ?? 0) * 100)}%`}
@@ -179,13 +179,12 @@ export const ControllerStep: React.FC<SetupStepProps> = ({
           </div>
         ) : (
           <Hint className="text-[14px]!">
-            No controller found. Connect it and press any button. Pads with a non-standard layout are set up on the
-            Wheel screen.
+            未找到手柄。请连接并按任意按键。非标准布局的手柄请在方向盘界面设置。
           </Hint>
         )}
       </SetupCard>
 
-      <SetupCard label="Steering feel">
+      <SetupCard label="转向手感">
         <div className="grid grid-cols-3 gap-2">
           {(Object.keys(PAD_SENSITIVITY) as PadSensitivity[]).map((id) => (
             <Choice
@@ -205,33 +204,33 @@ export const ControllerStep: React.FC<SetupStepProps> = ({
         </div>
         <div className="flex flex-col">
           <Toggle
-            label="Steering assist"
-            detail="The stick steers up to the front tyres' grip limit and helps catch slides"
+            label="转向辅助"
+            detail="摇杆转向最高可达前轮抓地极限，并帮助救车"
             checked={gamepadAssist}
             onChange={() => onSetGamepadAssist(!gamepadAssist)}
           />
           <div className="flex items-center gap-3">
             <div className="min-w-0 flex-1">
               <Toggle
-                label="Rumble"
-                detail="Kerbs, lock-ups, wheelspin and grass"
+                label="震动"
+                detail="路肩、抱死、空转和草地"
                 checked={gamepadRumble}
                 onChange={onToggleGamepadRumble}
               />
             </div>
             <PillAction onClick={testRumble} className="h-[34px]!">
-              Test
+              测试
             </PillAction>
           </div>
         </div>
       </SetupCard>
 
       <SetupCard
-        label="Buttons · RT throttle · LT brake · left stick steers"
+        label="按键 · RT 油门 · LT 刹车 · 左摇杆转向"
         action={
           <span className="flex gap-2">
-            <PillAction onClick={() => setShowMap((v) => !v)}>{showMap ? "Hide map" : "Button map"}</PillAction>
-            <PillAction onClick={() => onChangeSettings((s) => ({ ...s, padButtons: DEFAULT_PAD_BUTTONS }))}>Reset</PillAction>
+            <PillAction onClick={() => setShowMap((v) => !v)}>{showMap ? "隐藏按键图" : "按键图"}</PillAction>
+            <PillAction onClick={() => onChangeSettings((s) => ({ ...s, padButtons: DEFAULT_PAD_BUTTONS }))}>重置</PillAction>
           </span>
         }
       >
@@ -253,7 +252,7 @@ export const ControllerStep: React.FC<SetupStepProps> = ({
                   className={bindKeyClass(listening ? "listening" : bound ? "bound" : "empty", "min-w-[76px]")}
                 >
                   {listening ? (
-                    "PRESS…"
+                    "按下…"
                   ) : (
                     <>
                       {bound && button <= 3 ? <FaceDot button={button} family={family} /> : null}
@@ -266,73 +265,73 @@ export const ControllerStep: React.FC<SetupStepProps> = ({
           })}
         </AutoGrid>
         {capturing ? (
-          <StatusPill tone="live">Press a controller button · Esc cancels</StatusPill>
+          <StatusPill tone="live">按手柄按键 · Esc 取消</StatusPill>
         ) : (
-          <Hint>Click a button, then press the one you want.</Hint>
+          <Hint>点击一个按键，然后按下你想要的按键。</Hint>
         )}
       </SetupCard>
 
-      <SetupCard label="Fine tuning" action={<PillAction onClick={resetTuning}>Reset tuning</PillAction>}>
+      <SetupCard label="微调" action={<PillAction onClick={resetTuning}>重置微调</PillAction>}>
         <div className="flex flex-wrap gap-[22px]">
           <AutoGrid min={200} className="min-w-0 flex-[1_1_340px] gap-x-5 gap-y-2">
             <TuningSlider
-              label="Steering speed"
+              label="转向速度"
               value={tuning.steeringRate}
               min={0.1}
               max={1.5}
               step={0.05}
               format={(v) => `×${v.toFixed(2)}`}
-              hint="How quickly the stick turns the steering assist"
+              hint="摇杆转动转向辅助的速度"
               onChange={(v) => setTuning({ steeringRate: v })}
             />
             <TuningSlider
-              label="Inner dead zone"
+              label="内侧死区"
               value={tuning.deadzone}
               min={0}
               max={0.3}
               step={0.01}
               format={(v) => `${Math.round(v * 100)} %`}
-              hint="Stick travel ignored around centre"
+              hint="中心附近被忽略的摇杆行程"
               onChange={(v) => setTuning({ deadzone: v })}
             />
             <TuningSlider
-              label="Outer dead zone"
+              label="外侧死区"
               value={tuning.outerDeadzone}
               min={0}
               max={0.3}
               step={0.01}
               format={(v) => `${Math.round(v * 100)} %`}
-              hint="Full lock is reached before the stick's physical stop"
+              hint="在摇杆到达物理极限前即可打满方向"
               onChange={(v) => setTuning({ outerDeadzone: v })}
             />
             <TuningSlider
-              label="Stick linearity"
+              label="摇杆线性度"
               value={tuning.linearity}
               min={0.5}
               max={3}
               step={0.05}
-              format={(v) => (Math.abs(v - 1) < 0.025 ? "1.00 = linear" : v.toFixed(2))}
-              hint="Above 1 gives finer control near centre"
+              format={(v) => (Math.abs(v - 1) < 0.025 ? "1.00 = 线性" : v.toFixed(2))}
+              hint="大于 1 时中心附近控制更精细"
               onChange={(v) => setTuning({ linearity: v })}
             />
             <TuningSlider
-              label="Throttle curve"
+              label="油门曲线"
               value={tuning.throttleGamma}
               min={0.5}
               max={3}
               step={0.05}
               format={curveLabel}
-              hint="Above 1 keeps light presses gentler"
+              hint="大于 1 时轻踩更柔和"
               onChange={(v) => setTuning({ throttleGamma: v })}
             />
             <TuningSlider
-              label="Brake curve"
+              label="刹车曲线"
               value={tuning.brakeGamma}
               min={0.5}
               max={3}
               step={0.05}
               format={curveLabel}
-              hint="Above 1 gives finer brake control at light pressure"
+              hint="大于 1 时轻刹控制更精细"
               onChange={(v) => setTuning({ brakeGamma: v })}
             />
           </AutoGrid>
@@ -343,8 +342,8 @@ export const ControllerStep: React.FC<SetupStepProps> = ({
         </div>
         <div className="border-t border-[#262B3D] pt-2.5">
           <Toggle
-            label="Impulse-trigger rumble (Xbox)"
-            detail="ABS pulses in LT, wheelspin in RT"
+            label="扳机震动（Xbox）"
+            detail="LT 中 ABS 脉动，RT 中轮胎空转"
             checked={tuning.triggerRumble}
             onChange={() => setTuning({ triggerRumble: !tuning.triggerRumble })}
           />

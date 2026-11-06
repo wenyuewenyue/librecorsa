@@ -3,6 +3,7 @@
 import React, { useState } from "react";
 import { Choice } from "@/components/hud/PauseMenu";
 import { carById, carClass, carClassesInUse, carsInClass, type CarClassId, type CarId } from "@/lib/cars/car-registry";
+import { carTakesPhysicsSwitch, F1_MOD_PHYSICS_OPTIONS, setF1ModPhysics, useF1ModPhysics } from "@/lib/cars/f1-mod-physics";
 
 /**
  * The car picker: class tabs, then the cars of the open class. The open class follows the car chosen elsewhere.
@@ -21,10 +22,12 @@ export const CarPicker: React.FC<{ carId: CarId; onChangeCar: (car: CarId) => vo
     setClassId(current.classId);
   }
   const open = carClass(classId);
+  const modPhysics = useF1ModPhysics();
+  const physicsTitle = F1_MOD_PHYSICS_OPTIONS.find((o) => o.id === modPhysics)?.title ?? "";
 
   return (
     <div className="flex flex-col gap-2.5">
-      <div role="tablist" aria-label="Car class" className="flex gap-0.5 overflow-x-auto rounded-full border border-[#262B3D] bg-[#08090D] p-1">
+      <div role="tablist" aria-label="赛车组别" className="flex gap-0.5 overflow-x-auto rounded-full border border-[#262B3D] bg-[#08090D] p-1">
         {carClassesInUse().map((k) => {
           const selected = k.id === classId;
           return (
@@ -42,7 +45,7 @@ export const CarPicker: React.FC<{ carId: CarId; onChangeCar: (car: CarId) => vo
             >
               {k.title}
               {k.id === current.classId && !selected ? (
-                <span aria-label="Current car's class" className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: k.color }} />
+                <span aria-label="当前赛车的组别" className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: k.color }} />
               ) : null}
             </button>
           );
@@ -58,11 +61,44 @@ export const CarPicker: React.FC<{ carId: CarId; onChangeCar: (car: CarId) => vo
                   {car.badge}
                 </span>
               </span>
-              {compact ? null : <span className="text-[12px] leading-[1.4] opacity-75">{car.sub}</span>}
+              {compact ? null : (
+                <span className="text-[12px] leading-[1.4] opacity-75">
+                  {carTakesPhysicsSwitch(car.id) ? `${car.sub} · ${physicsTitle} physics` : car.sub}
+                </span>
+              )}
             </span>
           </Choice>
         ))}
       </div>
+      {carTakesPhysicsSwitch(carId) && current.classId === classId ? (
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="font-f1-mono text-[10px] font-extrabold tracking-[0.12em] text-[#8E96AA]">物理模型</span>
+            <span className="text-[11px] text-[#8E96AA]">适用于所有移植 F1 赛车</span>
+          </div>
+          <div role="radiogroup" aria-label="F1 car physics" className="flex gap-0.5 rounded-full border border-[#262B3D] bg-[#08090D] p-1">
+            {F1_MOD_PHYSICS_OPTIONS.map((o) => {
+              const selected = o.id === modPhysics;
+              return (
+                <button
+                  key={o.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  title={o.sub}
+                  onClick={() => setF1ModPhysics(o.id)}
+                  className={`inline-flex min-h-[40px] min-w-0 flex-1 cursor-pointer items-center justify-center rounded-full px-2.5 text-[13px] font-bold whitespace-nowrap transition-colors ${
+                    selected ? "text-[#08090D]" : "text-[#8E96AA] hover:text-[#F5F7FA]"
+                  }`}
+                  style={selected ? { backgroundColor: open.color } : undefined}
+                >
+                  {o.title}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };

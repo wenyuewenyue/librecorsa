@@ -30,15 +30,15 @@ const btn = (button: number, fixed?: string): Row => ({
 });
 
 const LEFT: Row[] = [
-  btn(PAD_BRAKE_BUTTON, "Brake"),
+  btn(PAD_BRAKE_BUTTON, "刹车"),
   btn(4),
   btn(8),
-  { key: "lstick", buttons: [], chip: () => "Stick", action: () => "Steer" },
+  { key: "lstick", buttons: [], chip: () => "摇杆", action: () => "转向" },
   btn(10),
-  { key: "dpad-x", buttons: [14, 15], chip: () => "◀ ▶", action: () => "MFD dial" },
-  { key: "dpad-y", buttons: [12, 13], chip: () => "▲ ▼", action: () => "MFD value" },
+  { key: "dpad-x", buttons: [14, 15], chip: () => "◀ ▶", action: () => "MFD 拨盘" },
+  { key: "dpad-y", buttons: [12, 13], chip: () => "▲ ▼", action: () => "MFD 数值" },
 ];
-const RIGHT: Row[] = [btn(PAD_THROTTLE_BUTTON, "Throttle"), btn(5), btn(9), btn(3), btn(1), btn(2), btn(0), btn(11)];
+const RIGHT: Row[] = [btn(PAD_THROTTLE_BUTTON, "油门"), btn(5), btn(9), btn(3), btn(1), btn(2), btn(0), btn(11)];
 
 /** Button state on the drawing: pressed on the pad, picked in the list, or at rest */
 type Look = "pressed" | "picked" | "rest";
@@ -137,7 +137,7 @@ const PadArt: React.FC<{ family: PadFamily; look: (button: number) => Look; axes
   ];
 
   return (
-    <svg viewBox="140 62 480 300" className="block h-auto w-full" role="img" aria-label={family === "playstation" ? "DualSense controller" : "Xbox controller"}>
+    <svg viewBox="140 62 480 300" className="block h-auto w-full" role="img" aria-label={family === "playstation" ? "DualSense 手柄" : "Xbox 手柄"}>
       {/* Triggers and bumpers sit behind the body */}
       {L.triggers.map(([x, y, w, h], i) => (
         <rect key={`t${i}`} x={x} y={y} width={w} height={h} rx={8} {...part(i ? 7 : 6)} />
@@ -235,7 +235,7 @@ export const PadMap: React.FC<{ family: PadFamily; bindings: PadButtonBindings; 
           >
             <Chip row={r} family={family} lit={lit} />
             <span className={`min-w-0 text-[13px] leading-tight font-bold ${action ? "text-[#F5F7FA]" : "text-[#5B6275]"}`}>
-              {action ?? "Not used"}
+              {action ?? "未使用"}
             </span>
           </li>
         );
