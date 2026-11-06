@@ -5,6 +5,7 @@
  */
 import trackIndex from "../../public/tracks/index.json";
 import { withBasePath } from "@/lib/base-path";
+import { getPreloadedTrackData } from "@/lib/loading/track-glb-cache";
 import { RWANDA_TARGET_LENGTH_M, RWANDA_TURN_METADATA, setActiveTrack, type RawTrackJson } from "@/lib/track-data";
 
 export interface TrackCredit {
@@ -33,18 +34,38 @@ export interface TrackInfo {
 
 export const RWANDA_TRACK_ID = "rwanda";
 
+/**
+ * Display-name overrides for circuits whose names come from public/tracks/index.json.
+ * The public file itself is not edited; only the displayed name/layout are replaced here.
+ * country/city/direction are intentionally left untouched: country feeds the timing-tower
+ * track code (country.slice(0, 3)) and direction is parsed with a /clock/i regex elsewhere.
+ */
+const TRACK_DISPLAY_ZH: Record<string, { name: string; layout: string }> = {
+  suzuka: { name: "铃鹿赛道", layout: "2001 布局" },
+  shanghai: { name: "上海国际赛车场", layout: "2018 布局" },
+  motegi: { name: "茂木赛道", layout: "公路赛道" },
+  sepang: { name: "雪邦国际赛道", layout: "2025 布局" },
+  daytona_oval: { name: "代托纳国际赛道", layout: "椭圆赛道" },
+  daytona_road: { name: "代托纳国际赛道", layout: "公路赛道" },
+  marina_bay: { name: "新加坡滨海湾街道赛道", layout: "2018–2022 布局" },
+  monza: { name: "蒙扎国家赛道", layout: "2020 布局" },
+  yas_marina: { name: "亚斯码头赛道", layout: "2021 布局" },
+  silverstone: { name: "银石赛道", layout: "2024 布局" },
+  spa: { name: "斯帕-弗朗科尔尚赛道", layout: "2022 布局" },
+};
+
 export const TRACKS: TrackInfo[] = [
   {
     id: RWANDA_TRACK_ID,
-    name: "Rwanda International Circuit",
-    layout: "2026 concept layout",
+    name: "卢旺达国际赛道",
+    layout: "2026 概念布局",
     country: "Rwanda",
     city: "Bugesera",
     lengthM: RWANDA_TARGET_LENGTH_M,
     turns: RWANDA_TURN_METADATA.length,
     direction: "clockwise",
   },
-  ...(trackIndex as TrackInfo[]),
+  ...(trackIndex as TrackInfo[]).map((t) => ({ ...t, ...(TRACK_DISPLAY_ZH[t.id] ?? {}) })),
 ];
 
 const TRACK_STORAGE_KEY = "bugesera.track";
@@ -78,9 +99,14 @@ export async function activateTrack(id: string): Promise<TrackInfo> {
   if (!info.dataUrl) {
     setActiveTrack(RWANDA_TRACK_ID);
   } else {
-    const res = await fetch(withBasePath(info.dataUrl));
-    if (!res.ok) throw new Error(`Track data ${info.dataUrl}: HTTP ${res.status}`);
-    setActiveTrack(info.id, (await res.json()) as RawTrackJson);
+    const preloaded = getPreloadedTrackData(info.id) as RawTrackJson | null;
+    if (preloaded) {
+      setActiveTrack(info.id, preloaded);
+    } else {
+      const res = await fetch(withBasePath(info.dataUrl));
+      if (!res.ok) throw new Error(`Track data ${info.dataUrl}: HTTP ${res.status}`);
+      setActiveTrack(info.id, (await res.json()) as RawTrackJson);
+    }
   }
   storeTrackId(info.id);
   return info;

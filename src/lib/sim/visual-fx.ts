@@ -11,14 +11,69 @@
 
 import * as THREE from 'three';
 import { createF1Car2026, type SimCarRig } from '@/lib/car-builder-2026';
-import { createGt3CarRig } from '@/lib/gt3-car-model';
+import { createGt3CarRig, loadGt3Cockpit, loadGt3Template } from '@/lib/gt3-car-model';
+import { AMR26_MODEL_URL, loadVf26Template } from '@/lib/vf26-car-model';
+import { assetProgress } from '@/lib/loading/asset-progress';
+import { addContactShadow } from '@/lib/render/contact-shadow';
 import { LIVERIES } from '@/lib/track-data';
 import { CarTelemetry, LiveryConfig, type VehicleModelId } from '@/types/f1';
 import type { SimulatorWheel as SimWheelState } from './simulator-car';
 import { InterpolatedPeerState } from './multiplayer-sync';
 
 const MAX_SKID_SEGMENTS = 900; // Ring buffer of 4-vertex quad segments across all 4 wheels
-const MAX_PARTICLES = 180;
+// Raised from 180 so a rainbow exhaust trail does not starve the tyre smoke pool
+const MAX_PARTICLES = 240;
+
+/**
+ * Soft puffs: camera-facing quads with a noisy radial falloff, fading in and out over their life, and fading out
+ * close to the camera so a puff never fills the lens. Instance scale comes from the instance matrix; the per-instance
+ * opacity and spin from `aPuff`.
+ */
+const PUFF_VERT = /* glsl */ `
+attribute vec2 aPuff;
+varying vec2 vUv;
+varying float vAlpha;
+varying vec3 vColor;
+void main() {
+  vec3 center = (instanceMatrix * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+  float scale = length(instanceMatrix[0].xyz);
+  vec4 mv = modelViewMatrix * vec4(center, 1.0);
+  float c = cos(aPuff.y);
+  float s = sin(aPuff.y);
+  mv.xy += mat2(c, s, -s, c) * position.xy * scale;
+  gl_Position = projectionMatrix * mv;
+  vUv = uv;
+  #ifdef USE_INSTANCING_COLOR
+  vColor = instanceColor;
+  #else
+  vColor = vec3(1.0);
+  #endif
+  vAlpha = aPuff.x * smoothstep(0.9, 3.5, -mv.z);
+}
+`;
+
+const PUFF_FRAG = /* glsl */ `
+uniform float uLight;
+varying vec2 vUv;
+varying float vAlpha;
+varying vec3 vColor;
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float noise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+void main() {
+  vec2 q = vUv - 0.5;
+  float r = length(q) * 2.0;
+  float body = 1.0 - smoothstep(0.15, 1.0, r);
+  float wisp = 0.55 * noise(q * 5.0 + 3.1) + 0.45 * noise(q * 11.0 - 1.7);
+  float a = body * body * (0.45 + 0.75 * wisp) * vAlpha;
+  if (a < 0.003) discard;
+  gl_FragColor = vec4(vColor * uLight, a);
+}
+`;
 
 interface ParticleInstance {
   active: boolean;
@@ -28,6 +83,10 @@ interface ParticleInstance {
   vel: THREE.Vector3;
   scale0: number;
   scale1: number;
+  /** Peak opacity, reached just after the puff is born */
+  alpha: number;
+  spin: number;
+  spinRate: number;
   color: THREE.Color;
 }
 
@@ -44,15 +103,28 @@ export class SimVisualFxManager {
 
   // Instanced smoke / gravel particle state
   private particleMesh: THREE.InstancedMesh;
+  private particleMat: THREE.ShaderMaterial;
+  private puffAttr: THREE.InstancedBufferAttribute;
   private particles: ParticleInstance[] = [];
   private particleCursor = 0;
   private emitTimer = 0;
   private dummy = new THREE.Object3D();
+  /** Activation-code rainbow exhaust for the local car (false: no rainbow particles) */
+  public rainbowEnabled = false;
+  /** Rainbow hue clock (s): particles take the hue at their emission time, so the trail cycles */
+  private rainbowTimeS = 0;
+  private rainbowEmitTimer = 0;
   /** Road wetness under the player's car (0..1): rear-wheel spray at speed */
   private wetness = 0;
 
   // Multiplayer / AI Opponent 3D cars
   private opponentCars = new Map<string, { rig: SimCarRig; vehicle: VehicleModelId | undefined }>();
+  /**
+   * Rigs built during loading (one racing car and one ghost per opponent model) so the shader warm-up covers them;
+   * handed out to the first peers that need that model instead of being built on the first frame of a race
+   */
+  private pool = new Map<string, SimCarRig[]>();
+  private prewarmedKinds = new Set<string>();
 
   constructor() {
     // 1. Initialize Persistent Tire Skidmark Ribbon Mesh
@@ -96,20 +168,22 @@ export class SimVisualFxManager {
     this.skidMesh.frustumCulled = false;
     this.group.add(this.skidMesh);
 
-    // 2. Initialize Instanced Tire Smoke & Gravel Particles
-    const puffGeom = new THREE.IcosahedronGeometry(0.32, 1);
-    const puffMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
+    // 2. Instanced soft puffs: tyre smoke, spray and off-track dust
+    const puffGeom = new THREE.PlaneGeometry(1, 1);
+    this.puffAttr = new THREE.InstancedBufferAttribute(new Float32Array(MAX_PARTICLES * 2), 2);
+    this.puffAttr.setUsage(THREE.DynamicDrawUsage);
+    puffGeom.setAttribute('aPuff', this.puffAttr);
+    this.particleMat = new THREE.ShaderMaterial({
+      vertexShader: PUFF_VERT,
+      fragmentShader: PUFF_FRAG,
+      uniforms: { uLight: { value: 1 } },
       transparent: true,
-      opacity: 0.36,
       depthWrite: false,
+      fog: false,
     });
-    this.particleMesh = new THREE.InstancedMesh(
-      puffGeom,
-      puffMat,
-      MAX_PARTICLES
-    );
+    this.particleMesh = new THREE.InstancedMesh(puffGeom, this.particleMat, MAX_PARTICLES);
     this.particleMesh.frustumCulled = false;
+    this.particleMesh.renderOrder = 2;
     this.particleMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 
     for (let i = 0; i < MAX_PARTICLES; i++) {
@@ -121,6 +195,9 @@ export class SimVisualFxManager {
         vel: new THREE.Vector3(),
         scale0: 0.3,
         scale1: 1.8,
+        alpha: 0,
+        spin: 0,
+        spinRate: 0,
         color: new THREE.Color(0xe2e8f0),
       });
       this.dummy.position.set(0, -1000, 0);
@@ -130,6 +207,11 @@ export class SimVisualFxManager {
       this.particleMesh.setColorAt(i, new THREE.Color(0xe2e8f0));
     }
     this.group.add(this.particleMesh);
+  }
+
+  /** Daylight on the puffs (0..1, the sky brightness): smoke and spray do not glow at dusk or under rain clouds */
+  public setLightLevel(level: number): void {
+    this.particleMat.uniforms.uLight.value = THREE.MathUtils.clamp(0.3 + 0.7 * level, 0.25, 1);
   }
 
   /** Wetness of the road under the player's car (weather.ts): spray behind the rear wheels, no smoke */
@@ -145,7 +227,9 @@ export class SimVisualFxManager {
     carWorldQuat: THREE.Quaternion,
     carSpeedMs: number,
     wheels: readonly [SimWheelState, SimWheelState, SimWheelState, SimWheelState],
-    peers: InterpolatedPeerState[]
+    peers: InterpolatedPeerState[],
+    carWorldPos?: THREE.Vector3,
+    throttle?: number
   ): void {
     const carRight = new THREE.Vector3(1, 0, 0).applyQuaternion(carWorldQuat);
     const carUp = new THREE.Vector3(0, 1, 0).applyQuaternion(carWorldQuat);
@@ -194,22 +278,25 @@ export class SimVisualFxManager {
         const w = wheels[wIdx];
         if (w.fzN <= 100) continue;
 
-        // Spray: front and rear tyres + central diffuser throw a rooster-tail plume of water up behind the car
+        // Spray: a fine mist off the tyres, most of it from the rears and the diffuser, rising behind the car. The
+        // fronts' is kept low and short-lived so it does not wash across the driver's view from beside the cockpit
         if (this.wetness > 0.14 && carSpeedMs > 12 && w.surfaceType !== 'grass') {
           const isRear = wIdx >= 2;
-          const prob = this.wetness * Math.min(1, carSpeedMs / 42) * (isRear ? 1 : 0.45);
+          const prob = this.wetness * Math.min(1, carSpeedMs / 42) * (isRear ? 1 : 0.35);
           if (Math.random() < prob) {
             this.spawnParticle(
-              w.worldPos.x - carForward.x * (isRear ? 0.45 : 0.25),
-              w.zRoad + (isRear ? 0.28 : 0.16),
-              w.worldPos.z - carForward.z * (isRear ? 0.45 : 0.25),
+              w.worldPos.x - carForward.x * (isRear ? 0.5 : 0.35),
+              w.zRoad + (isRear ? 0.25 : 0.1),
+              w.worldPos.z - carForward.z * (isRear ? 0.5 : 0.35),
               carForward,
               carUp,
               carSpeedMs * (isRear ? 1.65 : 1.15),
-              isRear ? 0.55 : 0.35,
-              isRear ? 3.8 : 2.1,
-              isRear ? 0.82 : 0.52,
-              0xd4dbe1
+              isRear ? 0.6 : 0.35,
+              isRear ? 3.2 : 1.1,
+              isRear ? 0.75 : 0.32,
+              0xc9d1d8,
+              (isRear ? 0.16 : 0.08) * (0.6 + 0.4 * this.wetness),
+              isRear ? 1 : 0.35
             );
           }
           continue;
@@ -222,10 +309,11 @@ export class SimVisualFxManager {
             carForward,
             carUp,
             carSpeedMs,
-            0.35,
-            2.2,
-            0.58,
-            0xe2e8f0
+            0.4,
+            2.4,
+            0.9,
+            0xd6d9dc,
+            0.32
           );
         } else if (w.surfaceType === 'grass' || w.surfaceType === 'runoff') {
           this.spawnParticle(
@@ -235,12 +323,43 @@ export class SimVisualFxManager {
             carForward,
             carUp,
             carSpeedMs,
-            0.28,
-            1.45,
-            0.48,
-            w.surfaceType === 'grass' ? 0x7c5836 : 0xcbd5e1
+            0.3,
+            1.6,
+            0.6,
+            w.surfaceType === 'grass' ? 0x8a6a48 : 0xb9b2a6,
+            0.3
           );
         }
+      }
+    }
+
+    // Rainbow exhaust: from the rear exhaust position, only while throttling and moving.
+    // One small particle at a low rate keeps the trail visible without flooding the pool.
+    if (this.rainbowEnabled && carWorldPos && (throttle ?? 0) > 0.1 && carSpeedMs > 3.5) {
+      this.rainbowTimeS += dt;
+      this.rainbowEmitTimer += dt;
+      if (this.rainbowEmitTimer >= 0.03) {
+        this.rainbowEmitTimer = 0;
+        const hue = (this.rainbowTimeS * 0.12) % 1;
+        const exhaust = carWorldPos
+          .clone()
+          .addScaledVector(carForward, -2.1)
+          .addScaledVector(carUp, 0.45);
+        this.spawnParticle(
+          exhaust.x,
+          exhaust.y,
+          exhaust.z,
+          carForward,
+          carUp,
+          carSpeedMs,
+          0.35,
+          2.0,
+          0.9,
+          new THREE.Color().setHSL(hue, 1, 0.55).getHex(),
+          // Alpha is a required spawnParticle argument since the upstream
+          // soft-puff rework; 0.8 keeps the rainbow trail clearly visible.
+          0.8
+        );
       }
     }
 
@@ -318,7 +437,9 @@ export class SimVisualFxManager {
     scale0: number,
     scale1: number,
     maxAge: number,
-    colorHex: number
+    colorHex: number,
+    alpha: number,
+    lift = 1
   ): void {
     const p = this.particles[this.particleCursor % MAX_PARTICLES];
     this.particleCursor++;
@@ -334,11 +455,14 @@ export class SimVisualFxManager {
     p.vel
       .copy(carForward)
       .multiplyScalar(carSpeedMs * 0.22)
-      .addScaledVector(carUp, 1.4 + Math.random() * 1.6);
+      .addScaledVector(carUp, (1.4 + Math.random() * 1.6) * lift);
     p.vel.x += (Math.random() - 0.5) * 1.8;
     p.vel.z += (Math.random() - 0.5) * 1.8;
-    p.scale0 = scale0;
-    p.scale1 = scale1;
+    p.scale0 = scale0 * (0.8 + 0.4 * Math.random());
+    p.scale1 = scale1 * (0.8 + 0.4 * Math.random());
+    p.alpha = alpha;
+    p.spin = Math.random() * Math.PI * 2;
+    p.spinRate = (Math.random() - 0.5) * 1.2;
     p.color.setHex(colorHex);
   }
 
@@ -356,6 +480,7 @@ export class SimVisualFxManager {
         this.dummy.scale.setScalar(0.001);
         this.dummy.updateMatrix();
         this.particleMesh.setMatrixAt(i, this.dummy.matrix);
+        this.puffAttr.setX(i, 0);
         continue;
       }
 
@@ -363,17 +488,22 @@ export class SimVisualFxManager {
       p.pos.addScaledVector(p.vel, dt);
       p.vel.multiplyScalar(Math.max(0, 1.0 - 2.2 * dt));
 
-      const s = THREE.MathUtils.lerp(p.scale0, p.scale1, lifeT) * (1.0 - lifeT * 0.35);
+      // Grows fast and then drifts out; fades in over the first 12 % of its life and thins out to nothing
+      const grow = 1 - (1 - lifeT) * (1 - lifeT);
+      const s = THREE.MathUtils.lerp(p.scale0, p.scale1, grow);
       this.dummy.position.copy(p.pos);
+      this.dummy.rotation.set(0, 0, 0);
       this.dummy.scale.setScalar(Math.max(0.01, s));
-      this.dummy.rotation.set(lifeT * 2.1, lifeT * 1.7, 0);
       this.dummy.updateMatrix();
       this.particleMesh.setMatrixAt(i, this.dummy.matrix);
       this.particleMesh.setColorAt(i, p.color);
+      p.spin += p.spinRate * dt;
+      this.puffAttr.setXY(i, p.alpha * THREE.MathUtils.smoothstep(lifeT, 0, 0.12) * Math.pow(1 - lifeT, 1.5), p.spin);
     }
 
     if (anyUpdated) {
       this.particleMesh.instanceMatrix.needsUpdate = true;
+      this.puffAttr.needsUpdate = true;
       if (this.particleMesh.instanceColor) {
         this.particleMesh.instanceColor.needsUpdate = true;
       }
@@ -392,12 +522,63 @@ export class SimVisualFxManager {
   /** The car the peer reports (AI and older clients: the AMR, which is what F1Physics2026 models) */
   private createOpponentRig(peer: InterpolatedPeerState): SimCarRig {
     const livery = this.mapDriverToLivery(peer.driverCode);
-    if (peer.vehicle === 'amg-gt3') {
-      const rig = createGt3CarRig();
-      rig.setLivery(livery);
-      return rig;
+    const pooled = this.pool.get(poolKey(peer.vehicle, Boolean(peer.ghost)))?.pop();
+    if (pooled) {
+      pooled.root.visible = true;
+      if (!peer.ghost) pooled.setLivery(livery);
+      return pooled;
     }
-    return createF1Car2026(livery, 'medium');
+    return buildOpponentRig(peer.vehicle, livery);
+  }
+
+  /**
+   * During loading: fetch the opponents' model and build one racing and one ghost rig of it, parked out of sight but
+   * visible so the loading screen's shader warm-up compiles them (and the ghost's translucent variants). Reports to the
+   * loading screen's "opponents" task. Call `hidePrewarmed()` once the warm-up has drawn them.
+   */
+  public prewarm(vehicle: VehicleModelId | undefined): Promise<void> {
+    const kind = rigKind(vehicle);
+    if (this.prewarmedKinds.has(kind)) {
+      assetProgress.done('opponents');
+      return Promise.resolve();
+    }
+    this.prewarmedKinds.add(kind);
+    const template: Promise<unknown> =
+      kind === 'gt3'
+        ? Promise.all([loadGt3Template('opponents'), loadGt3Cockpit()])
+        : loadVf26Template(AMR26_MODEL_URL, 'opponents');
+    return template
+      .then(() => {
+        // The rigs attach the cached template in their own `then`, registered before this one returns. One racing
+        // rig per AI driver, in its livery (a GT3 livery is a repainted texture: done here, not on lap one's first
+        // frame), and one ghost
+        const builds: { ghost: boolean; livery: LiveryConfig }[] = [
+          ...PREWARM_DRIVERS.map((code) => ({ ghost: false, livery: this.mapDriverToLivery(code) })),
+          { ghost: true, livery: LIVERIES[0] },
+        ];
+        for (const { ghost, livery } of builds) {
+          const rig = buildOpponentRig(vehicle, livery);
+          rig.root.position.set(0, -500, 0);
+          this.group.add(rig.root);
+          const key = poolKey(vehicle, ghost);
+          this.pool.set(key, [...(this.pool.get(key) ?? []), rig]);
+        }
+        // A task later the rigs have attached the cached models (each in its own promise callback)
+        return new Promise<void>((resolve) => setTimeout(resolve, 0));
+      })
+      .then(() => {
+        for (const rig of this.pool.get(poolKey(vehicle, true)) ?? []) ghostify(rig.root);
+        assetProgress.done('opponents');
+      })
+      .catch((err) => {
+        console.warn('Opponent cars not pre-warmed', err);
+        assetProgress.fail('opponents');
+      });
+  }
+
+  /** Parks the pooled rigs out of the render once the warm-up has compiled them */
+  public hidePrewarmed(): void {
+    for (const rigs of this.pool.values()) for (const rig of rigs) rig.root.visible = false;
   }
 
   private updateOpponentCars(dt: number, peers: InterpolatedPeerState[]): void {
@@ -505,6 +686,30 @@ export class SimVisualFxManager {
 
       carRig.updateFromTelemetry(syntheticTelemetry, pitchRad, rollRad, wheelRot);
 
+      // Opponent rainbow exhaust (activation-code run, synced over P2P): same trail as the
+      // local car, emitted behind the peer car at a low rate so several rainbow cars stay cheap.
+      const peerSpeedMsForRainbow = peer.speedKmh / 3.6;
+      if (peer.rainbow && !peer.ghost && peer.speedKmh > 12 && peer.throttle > 0.1 && Math.random() < 0.6) {
+        const peerFwd = new THREE.Vector3(0, 0, 1).applyQuaternion(peer.quaternion);
+        const peerUp = new THREE.Vector3(0, 1, 0).applyQuaternion(peer.quaternion);
+        const hue = ((performance.now() * 0.00012) % 1 + 0.5) % 1;
+        this.spawnParticle(
+          peer.position.x - peerFwd.x * 2.1,
+          peer.position.y + 0.45,
+          peer.position.z - peerFwd.z * 2.1,
+          peerFwd,
+          peerUp,
+          peerSpeedMsForRainbow,
+          0.35,
+          2.0,
+          0.9,
+          new THREE.Color().setHSL(hue, 1, 0.55).getHex(),
+          // Alpha is a required spawnParticle argument since the upstream
+          // soft-puff rework; 0.6 (dimmer than the local car) for peers.
+          0.6
+        );
+      }
+
       // Opponent car rooster-tail water spray plume in wet conditions
       if (this.wetness > 0.16 && !peer.ghost && peer.speedKmh > 55) {
         const peerSpeedMs = peer.speedKmh / 3.6;
@@ -520,9 +725,11 @@ export class SimVisualFxManager {
             peerUp,
             peerSpeedMs * 1.55,
             0.6,
-            4.1,
+            3.6,
             0.85,
-            0xd4dbe1
+            0xc9d1d8,
+            // A mist that greys out what is behind it, not a wall: following closely still costs visibility
+            0.14 * (0.6 + 0.4 * this.wetness)
           );
         }
       }
@@ -538,12 +745,36 @@ export class SimVisualFxManager {
   }
 }
 
-/** Makes a car translucent (the best-lap ghost); new meshes from a late model load are caught on later calls */
+/** The AI field's drivers (ai-opponents.ts AI_DRIVERS), whose liveries the pool is built in */
+const PREWARM_DRIVERS = ['KIG', 'MUS', 'NYA', 'RUB', 'HUY'] as const;
+const rigKind = (vehicle: VehicleModelId | undefined) => (vehicle === 'amg-gt3' ? 'gt3' : 'f1');
+const poolKey = (vehicle: VehicleModelId | undefined, ghost: boolean) => `${rigKind(vehicle)}${ghost ? ':ghost' : ''}`;
+
+function buildOpponentRig(vehicle: VehicleModelId | undefined, livery: LiveryConfig): SimCarRig {
+  let rig: SimCarRig;
+  if (vehicle === 'amg-gt3') {
+    rig = createGt3CarRig();
+    rig.setLivery(livery);
+  } else {
+    rig = createF1Car2026(livery, 'medium');
+  }
+  addContactShadow(rig.root, vehicle);
+  return rig;
+}
+
+/** Makes a car translucent (the best-lap ghost); new meshes from a late model load are caught on later calls.
+ * The ghost also draws after the racing line (line renderOrder 2): both are
+ * transparent and neither writes depth, so in the default order the line —
+ * drawn later — painted straight over the ghost body wherever they overlapped
+ * on screen, which read as the line sitting on top of the car. Drawing the
+ * ghost last makes the line show through the translucent body instead, the
+ * way a ghost should look. */
 function ghostify(root: THREE.Object3D): void {
   root.traverse((obj) => {
     const mesh = obj as THREE.Mesh;
     if (!mesh.isMesh) return;
     mesh.castShadow = false;
+    mesh.renderOrder = 3;
     const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
     if (mats.every((m) => m.userData.ghost)) return;
     const next = mats.map((m) => {

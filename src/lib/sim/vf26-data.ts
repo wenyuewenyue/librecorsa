@@ -61,7 +61,7 @@ export interface Vf26TyreSpec {
   angularInertia: number;
   /** Lateral relaxation length (m) [assumed] */
   relaxationLength: number;
-  /** Running (hot) inflation pressure at which grip peaks (psi) [assumed: 2026 Pirelli window] */
+  /** Running inflation pressure at 95 °C gas temperature (psi gauge); dry grip optimum [assumed: 2026 Pirelli window] */
   pressureRefPsi: number;
   /** Performance vs. temperature (°C → grip multiplier) [mod] */
   thermalCurve: LutPoints;
@@ -644,6 +644,12 @@ export const VF26_DRIVETRAIN = {
   autoClutchFullRpm: 5500,
   /** Engine speed the auto-clutch holds off the line at full pedal (rpm) [assumed: typical F1 launch] */
   launchRpm: 10500,
+  /**
+   * Seconds over which the auto-clutch lets the launch rpm down to its anti-stall window once the car rolls, as a
+   * driver easing the paddle out: the engine dips to meet the road instead of sitting at the launch rpm with the clutch
+   * slipping through all of first gear [assumed]
+   */
+  launchReleaseS: 1.0,
   /**
    * Limited-slip differential [setup: default setup power 0.20 / coast 0.10 / preload 45 Nm; field
    * order inferred from the setup limits 0–0.5 / 0–0.5 / 0–150 Nm. The drivetrain base is 0.15 / 0.3 / 150]

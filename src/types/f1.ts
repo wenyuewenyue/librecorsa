@@ -247,9 +247,25 @@ export interface RaceSplits {
   behind?: RaceSplit;
 }
 
-/** Driver-set tyre setup (front / rear axle). Camber in degrees, negative = top of the tyre leaning inward. */
+/** Cold pressure per tyre (psi gauge): front-left, front-right, rear-left, rear-right */
+export interface WheelPressures {
+  fl: number;
+  fr: number;
+  rl: number;
+  rr: number;
+}
+
+/** The pressure of one tyre by its corner */
+export const pressureAt = (p: WheelPressures, isFront: boolean, isLeft: boolean): number =>
+  isFront ? (isLeft ? p.fl : p.fr) : isLeft ? p.rl : p.rr;
+
+/** Both tyres of each axle at one pressure */
+export const axlePressures = (front: number, rear: number): WheelPressures => ({ fl: front, fr: front, rl: rear, rr: rear });
+
+/** Driver-set tyre setup. Camber in degrees per axle, negative = top of the tyre leaning inward. */
 export interface TyreSetup {
-  coldPressurePsi: { front: number; rear: number };
+  /** Psi gauge per tyre at the model's cold reference: VF26 20 °C; F12026/GT3 compound blanket temperature. */
+  coldPressurePsi: WheelPressures;
   camberDeg: { front: number; rear: number };
 }
 
@@ -297,7 +313,7 @@ export interface CarTelemetry {
   tireWearPct: [number, number, number, number]; // FL, FR, RL, RR (0..100% wear)
   /** Tread surface temperatures across each tyre, left → right as seen from behind (°C) */
   tireBandTempsC?: [Band3, Band3, Band3, Band3];
-  /** Hot inflation pressures (psi) */
+  /** Current inflation pressures (psi gauge) */
   tirePressuresPsi?: [number, number, number, number];
   /** Circumferential flat-spot severity per corner (0..1) */
   tireFlatSpotSeverity?: [number, number, number, number];
@@ -369,7 +385,7 @@ export interface CarTelemetry {
   lapInvalid?: boolean;
   /** Verdict on the lap that was just completed (set together with `lapCount` / `lastLapTimeMs`) */
   lastLapValid?: boolean;
-  /** Hot pressure at which each tyre grips best (psi) */
+  /** Reference hot pressure at which each tyre grips best (psi gauge) */
   tireOptimalPsi?: [number, number, number, number];
   /** The compound's working window of tread temperature (°C) */
   tireOptimalTempC?: [number, number];

@@ -1,6 +1,7 @@
 import * as THREE from "three";
-import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { assetProgress } from "@/lib/loading/asset-progress";
+import { createGltfLoader } from "@/lib/render/gltf-loader";
+import { sharpenCarMaps } from "@/lib/render/ported-car-materials";
+import { assetProgress, type AssetTaskId } from "@/lib/loading/asset-progress";
 import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { withBasePath } from "@/lib/base-path";
 import { VF26_CHASSIS } from "@/lib/sim/vf26-data";
@@ -13,6 +14,8 @@ import {
 } from "@/lib/render/tyre-deformation";
 import { applyRearRainLight } from "@/lib/render/golden-hour-environment";
 import { setVf26LiveryColours, upgradeVf26Materials } from "@/lib/render/car-materials";
+import { applyLivery, collectPaintSlots, type PaintKeys } from "@/lib/render/livery-repaint";
+import { moveToDriverHeadLayer } from "@/lib/render/layers";
 
 /**
  * F1 3D model (`public/amr26/model/amr26.glb`). On builds without the GLB `loadVf26Template()` resolves to null
@@ -26,6 +29,16 @@ import { setVf26LiveryColours, upgradeVf26Materials } from "@/lib/render/car-mat
  * with the selected LiveryConfig colours.
  */
 export const AMR26_MODEL_URL = "/amr26/model/amr26.glb";
+
+/**
+ * Factory colours of the AMR26 EXT_SKIN artwork (teal body, black sidepods and pixel fade, lime fade and tips),
+ * repainted per livery when the GLB carries no livery mask
+ */
+const AMR26_PAINT_KEYS: PaintKeys = {
+  primary: ["#006563"],
+  secondary: ["#181818", "#101410"],
+  accent: ["#cee35a"],
+};
 
 export interface Vf26CameraAnchor {
   /** Rig-local position (m): +X left, +Y up, +Z forward */
@@ -51,8 +64,6 @@ export interface Vf26ModelInstance {
   setTireCompound: (compound: TireCompound) => void;
   /** Livery colours for the masked paint */
   setLivery: (livery: LiveryConfig) => void;
-  /** Hide the helmet while the camera sits at the driver's eye point */
-  setHeadVisible: (visible: boolean) => void;
   dispose: () => void;
 }
 
@@ -65,20 +76,16 @@ const templatePromises = new Map<string, Promise<THREE.Group | null>>();
 // Kept out of userData: Object3D.clone() JSON-serialises userData, which would encode every texture per car
 const templateAssets = new WeakMap<THREE.Object3D, TemplateAssets>();
 
-export function loadVf26Template(modelUrl: string = AMR26_MODEL_URL): Promise<THREE.Group | null> {
+/** `task`: the loading-screen task its download counts toward (the player's car, or the opponents' when it differs) */
+export function loadVf26Template(modelUrl: string = AMR26_MODEL_URL, task: AssetTaskId = "car"): Promise<THREE.Group | null> {
   let promise = templatePromises.get(modelUrl);
   if (!promise) {
     promise = (async () => {
       if (typeof window === "undefined") return null;
       const url = withBasePath(modelUrl);
-      assetProgress.begin("car");
+      assetProgress.begin(task);
       try {
-        const head = await fetch(url, { method: "HEAD" });
-        if (!head.ok) {
-          assetProgress.fail("car");
-          return null;
-        }
-        const gltf = await new GLTFLoader().loadAsync(url, (event) => assetProgress.progress("car", event));
+        const gltf = await createGltfLoader().loadAsync(url, (event) => assetProgress.progress(task, event));
         const scene = gltf.scene;
         // Per-compound tyre maps are stored as extra textures (index list in the root node extras)
         const tyreIdx = (scene.getObjectByName("VF26")?.userData?.tyreMaps ?? {}) as Record<string, number>;
@@ -100,16 +107,16 @@ export function loadVf26Template(modelUrl: string = AMR26_MODEL_URL): Promise<TH
           const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
           for (const m of mats) {
             const std = m as THREE.MeshStandardMaterial;
-            if (std.map) std.map.anisotropy = 8;
+            sharpenCarMaps(m);
             if (std.transparent) std.depthWrite = false;
           }
         });
         scene.updateMatrixWorld(true);
-        assetProgress.done("car");
+        assetProgress.done(task);
         return scene;
       } catch (err) {
         console.warn("VF26 model not loaded, using the procedural car", err);
-        assetProgress.fail("car");
+        assetProgress.fail(task);
         return null;
       }
     })();
@@ -265,6 +272,9 @@ export function attachVf26Model(
 
   // Driver arms follow the wheel through the mod's driver_steer clip (time set from the wheel angle)
   const helmet = driver?.getObjectByName("HELMET") ?? null;
+  // The cockpit camera leaves this layer out (the eye point sits inside the helmet); the sun's shadow camera
+  // keeps it, so the head still shadows the cockpit
+  if (helmet) moveToDriverHeadLayer(helmet);
   const steerTable = extras.driver?.steerAngleDeg ?? [];
   const steerClip = assets.animations.find((a) => a.name === (extras.driver?.steerClip ?? "steer"));
   let driverMixer: THREE.AnimationMixer | null = null;
@@ -408,12 +418,16 @@ export function attachVf26Model(
     }
   };
 
+  // Without a mask, the authored EXT_SKIN artwork (also sampled by EXT_DECALS) is repainted per livery
+  const paintSlots = liveryMask
+    ? []
+    : collectPaintSlots(
+        bodyGroup,
+        (m) => (m.name === "EXT_SKIN" || m.name === "EXT_DECALS") && !!(m as THREE.MeshStandardMaterial).map
+      );
   const setLivery = (livery: LiveryConfig) => {
     if (liveryMask) setVf26LiveryColours(livery.primary, livery.secondary, livery.accent);
-  };
-
-  const setHeadVisible = (visible: boolean) => {
-    if (helmet) helmet.visible = visible;
+    else applyLivery(paintSlots, AMR26_PAINT_KEYS, livery);
   };
 
   const dispose = () => {
@@ -423,5 +437,5 @@ export function attachVf26Model(
     for (const c of corners) c.steer.removeFromParent();
   };
 
-  return { bodyGroup, cameraAnchors, update, setTireCompound, setLivery, setHeadVisible, dispose };
+  return { bodyGroup, cameraAnchors, update, setTireCompound, setLivery, dispose };
 }

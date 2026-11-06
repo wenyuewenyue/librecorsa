@@ -3,6 +3,7 @@
  * Plain JSON-friendly data so recordings can be stored (IndexedDB), exported as files and uploaded.
  */
 import type { VehicleModelId } from "@/types/f1";
+import type { FlashbackEvent, WallReturnEvent } from "./buff-pack";
 
 /** Fields of one recorded sample, in order; a recording stores samples flattened with this stride */
 export const LAP_SAMPLE_FIELDS = [
@@ -55,6 +56,19 @@ export interface LapRecording {
   sampleHz: number;
   /** Flattened samples, LAP_SAMPLE_STRIDE numbers each, in LAP_SAMPLE_FIELDS order */
   data: number[];
+  /** Wall-return teleports inside this lap, if any (absent for ordinary laps) */
+  wallReturns?: WallReturnEvent[];
+  /** Instant-replay flashback teleports inside this lap, if any (absent for ordinary laps) */
+  flashbacks?: FlashbackEvent[];
+  /**
+   * Track-limits penalty in this lap (ms, +3000 per strike, absent/0 for clean laps).
+   * `lapTimeMs` is the classified time (raw driven time + all penalties below); the samples and
+   * sector times stay raw, so a penalised ghost plays back at its driven speed and the
+   * classified time is the one that counts for personal bests and leaderboards.
+   */
+  trackLimitsPenaltyMs?: number;
+  /** Autopilot penalty in this lap (ms, +30000 once if any frame was autopilot, absent/0 otherwise) */
+  autopilotPenaltyMs?: number;
 }
 
 /** A corner of the lap: the lowest speed through it, and the best seen on earlier laps */
@@ -69,8 +83,23 @@ export interface CornerStat {
 /** Shown on the lap summary card after a lap */
 export interface LapSummaryData {
   lapNumber: number;
+  /** Classified lap time: raw driven time + `trackLimitsPenaltyMs` */
   lapTimeMs: number;
-  /** False when the lap left the track limits */
+  /** Raw driven time before any track-limits penalty */
+  rawLapTimeMs: number;
+  /** Track-limits penalty in this lap (ms, +3000 per strike, 0 for clean laps) */
+  trackLimitsPenaltyMs: number;
+  /** Autopilot penalty in this lap (ms, +30000 once if any frame was autopilot, 0 otherwise) */
+  autopilotPenaltyMs: number;
+  /** Number of free flashbacks in this lap (0 for laps without one; flashback adds no time) */
+  flashbackCount: number;
+  /**
+   * Always true for a lap completed by the current recorder: whole-lap invalidation was
+   * abolished in favour of time penalties (flashback, autopilot and track limits all add
+   * time instead of deleting the lap). Kept for compatibility with older summaries and
+   * as a defensive fallback in the UI; a lap that never completed (damaged recording,
+   * too short/long, no samples) produces no summary at all rather than an invalid one.
+   */
   valid: boolean;
   /** Against the personal best before this lap (ms, negative = faster); null without one */
   deltaToBestMs: number | null;
